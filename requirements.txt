@@ -1,0 +1,30 @@
+# LAN Sharing App - Requirements
+
+## Core Functionality
+- File transfer between devices on local network
+- Device discovery and browsing
+- Real-time chat/messaging
+- Progress tracking for transfers
+
+## Technical Requirements
+- Cross-platform support (Windows, macOS, Linux)
+- LAN discovery protocol (mDNS/bonjour or similar)
+- TCP/UDP socket communication
+- Progress bar and transfer statistics
+- Error handling and reconnection
+
+## UI/UX Requirements
+- Modern, intuitive interface
+- Drag-and-drop file transfers
+- Connection status indicators
+- Transfer history
+
+## Dependencies (based on language choice)
+- Python: asyncio, aiohttp, or similar
+- Node.js: net module, ws library
+- C++: Qt or similar networking libraries
+
+## Security
+- Local network only (no internet required)
+- Optional password protection
+- File permission handling
