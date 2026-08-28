@@ -1,3 +1,4 @@
+import sys
 import socket
 from fastapi.responses import HTMLResponse
 from fastapi import FastAPI
@@ -6,8 +7,12 @@ import re
 from pathlib import Path
 from fastapi import UploadFile, File
 from datetime import datetime
+import qrcode
+from rich.console import Console
+from rich.panel import Panel
 UPLOAD_FOLDER = Path.home() / "lanshare"
 app = FastAPI()
+console = Console()
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
@@ -35,6 +40,7 @@ async def upload(files: list[UploadFile] = File(...)):
                 if not chunk:
                     break
                 out.write(chunk)
+        console.print(f"[green]saved[/green] [cyan]{dest.name}[/cyan]")
     return {"message": f"Uploaded {len(files)} files successfully."}
 
 def safe_filename(filename):
@@ -59,12 +65,32 @@ def get_lan_ip():
     finally:
         s.close()
 
-print("LAN IP Address:", get_lan_ip())
+
+def print_qr(url):
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(url)
+    qr.make(fit=True)
+    qr.print_ascii(invert=True)
+
+
+def print_startup(url):
+    panel = Panel(
+        f"[bold]LAN Share is running[/bold]\n\n"
+        f"Open on any device on this WiFi:\n[bold cyan]{url}[/bold cyan]\n\n"
+        f"Uploads are saved to: [green]{UPLOAD_FOLDER}[/green]\n",
+        title="[bold]LAN Share[/bold]",
+        border_style="cyan",
+    )
+    console.print(panel)
+    print_qr(url)
 
 
 def main():
+    sys.stdout.reconfigure(encoding="utf-8")
 
     UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+    url = f"http://{get_lan_ip()}:8000"
+    print_startup(url)
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 if __name__ == "__main__":
