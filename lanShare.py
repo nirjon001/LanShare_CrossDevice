@@ -1,6 +1,6 @@
 import sys
 import socket
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi import FastAPI
 import uvicorn
 import re
@@ -17,6 +17,12 @@ console = Console()
 @app.get("/", response_class=HTMLResponse)
 async def index():
     lan_ip = get_lan_ip()
+    files = sorted(
+        [p for p in UPLOAD_FOLDER.iterdir() if p.is_file() and not p.name.startswith(".")],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    gallery = render_gallery(files)
     return f"""
      <html>
         <body>
@@ -26,6 +32,10 @@ async def index():
                 <input type="file" name="files" multiple required>
                 <button type="submit">Upload</button>
             </form>
+            <h2>Files on this computer</h2>
+            <div class="gallery">
+            {gallery}
+            </div>
         </body>
     </html>
     """
@@ -43,6 +53,15 @@ async def upload(files: list[UploadFile] = File(...)):
         console.print(f"[green]saved[/green] [cyan]{dest.name}[/cyan]")
     return {"message": f"Uploaded {len(files)} files successfully."}
 
+
+@app.get("/files/{name}")
+async def download(name: str):
+    path = resolve_upload_path(UPLOAD_FOLDER, name)
+    if path is None:
+        return HTMLResponse("<h1>404 - not found</h1>", status_code=404)
+    return FileResponse(path, filename=path.name)
+
+
 def safe_filename(filename):
     return re.sub(r"[/\\]", "_", filename)
 
@@ -56,6 +75,35 @@ def unique_path(UPLOAD_FOLDER, filename):
         if not candidate.exists():
             return candidate
     return UPLOAD_FOLDER / f"{stem}-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}{suffix}"
+
+
+def resolve_upload_path(folder, name):
+    candidate = (folder / safe_filename(name)).resolve()
+    folder_r = folder.resolve()
+    try:
+        candidate.relative_to(folder_r)
+    except ValueError:
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+def render_gallery(files):
+    cards = []
+    for p in files:
+        size_kb = p.stat().st_size / 1024
+        stamp = datetime.fromtimestamp(p.stat().st_mtime).strftime("%b %d, %H:%M")
+        cards.append(f"""
+        <div class="card">
+          <strong>{p.name}</strong>
+          <span>{size_kb:.1f} KB | {stamp}</span>
+          <div>
+            <a href="/files/{p.name}">Download</a>
+          </div>
+        </div>""")
+    return "".join(cards)
+
 
 def get_lan_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
