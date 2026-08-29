@@ -11,7 +11,7 @@ from datetime import datetime
 import qrcode
 from rich.console import Console
 from rich.panel import Panel
-UPLOAD_FOLDER = Path.home() / "lanshare"
+UPLOAD_FOLDER = Path("G:/lan share")
 app = FastAPI()
 console = Console()
 
