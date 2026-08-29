@@ -23,6 +23,9 @@ to upload into the folder you're looking at.
   in the Drives view. Pick a chip to browse/search/upload/zip/stash that device through the hub (same
   PIN everywhere, no per-device setup)
 - **Paste a Windows path** into the address bar (`G:\Downloads\songs`) and jump straight there
+- **Recent files** — each device shows the files recently opened in Windows on it (the OS Recent
+  list), and other devices can see them through the hub and grab them with Download or the 💼 Bag:
+  "send what I just edited" is one hop away. Click a row to jump to its folder.
 - **Drive capacities** — each drive card shows its total and free space
 - **Upload** files into whatever folder you're currently viewing (drag & drop or tap the box)
 - **Delete** a file from the folder you're viewing
@@ -108,6 +111,7 @@ The hub console prints `device registered`, and the peer bar shows the device wi
 | `GET /api/drives` | detected drives + configured shares (path, writable, online, size, free) |
 | `GET /api/list?root=&path=` | folders/files in one directory (dirs first) |
 | `GET /api/search?root=&path=&q=&limit=&depth=` | live recursive name search (capped/depth-limited) |
+| `GET /api/recent` · `GET /api/recent/file?path=` | recently opened files on this device (resolves .lnk) |
 | `GET`/`HEAD /files/{share}/{subpath:path}` | download a file |
 | `POST /zip/{share}/{subpath:path}/start` | start a background zip job |
 | `GET /zip/status/{job_id}` | poll the zip job (bytes zipped / total) |
@@ -144,6 +148,6 @@ The hub console prints `device registered`, and the peer bar shows the device wi
 
 ## Learning progress
 
-This repo `LEARN.md` is a concept-by-concept map of the whole app (56 ideas, each with a 2–5 minute
+This repo `LEARN.md` is a concept-by-concept map of the whole app (57 ideas, each with a 2–5 minute
 "do it yourself" task) plus a 40-minute interview rebuild drill. One page a day — the goal is to be
 able to rewrite this app from scratch, not to read about it.

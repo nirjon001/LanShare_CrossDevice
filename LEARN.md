@@ -9,7 +9,7 @@ Each section is ONE idea. For every idea there is:
   the name.
 - **Do it yourself** — a 2-5 minute task. Do these until the answer comes without thinking.
 
-The whole app = ~56 ideas. One page a day = a month to real ownership.
+The whole app = ~57 ideas. One page a day = a month to real ownership.
 
 ## The 20-minute rule
 
@@ -448,6 +448,18 @@ Never move to the next section with an unchecked gap — gaps compound.
 - **Do it**: stash a folder, then try to pull it into one of its own subfolders — read the `failed`
   reason the guard returns.
 
+### 57. Recent files — parsing a .lnk
+- **What it is**: Windows keeps a `.lnk` shortcut for every file opened recently, in
+  `%APPDATA%\Microsoft\Windows\Recent`. A shortcut is a *binary* file, but a tiny structured one:
+  a 76-byte header whose LinkFlags (offset 0x14) say what follows, plus a LinkInfo block holding the
+  target path as NUL-terminated text. `/api/recent` resolves the newest ones to real files and
+  `/api/recent/file?path=` serves one — so "send what I just edited" is one hop from any device.
+- **Find it**: `lanShare.py → resolve_lnk()` (`struct.unpack_from`, `utf-16-le`/`cp1252`),
+  `api_recent()`, `recent_file()`; `lanshare.js → openRecent()`, `downloadRecent()`,
+  `jumpToRecent()` (reuses `findShareForPath` so rows jump to the owning share)
+- **Do it**: open a Random file in Notepad, then hit `/api/recent` — it's listed first. Add the Recent
+  card to the Drives view and it shows the same list.
+
 ---
 
 ## The interview rebuild drill
@@ -469,7 +481,8 @@ Take `lanShare.py` (the server) and write it from an empty file in under 40 minu
     (+ `kind` file/dir/zip, `add-zip` stash, destination-inside-source guard)
 13. multi-device: device id + shared token, `register`/`heartbeat`/`peers`, the generic streaming
     `/peer/{id}/{path}` proxy, and the registration loop
-14. startup panel (rich) + QR + uvicorn
+14. recent files: `resolve_lnk` + `GET /api/recent` + `GET /api/recent/file?path=`
+15. startup panel (rich) + QR + uvicorn
 
 Then do the same for `lanshare.js`: `loadDrives`, `openDrive`, `loadListing` + breadcrumb render,
 folder navigation (state machine), live search (debounce + sequence guard), go-to-path (`findShareForPath`),

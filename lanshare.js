@@ -39,6 +39,7 @@ function fmtDate(ts) {
 const appView = document.getElementById("appView");
 const viewFiles = document.getElementById("view-files");
 const viewDrives = document.getElementById("view-drives");
+const viewRecent = document.getElementById("view-recent");
 const tbody = document.getElementById("fileRows");
 const empty = document.getElementById("emptyState");
 const dropzone = document.getElementById("dropzone");
@@ -133,7 +134,9 @@ function showView(name) {
   );
   viewFiles.hidden = name !== "files";
   viewDrives.hidden = name !== "drives";
+  viewRecent.hidden = name !== "recent";
   if (name === "drives") loadDrives();
+  if (name === "recent") openRecent();
 }
 
 document.querySelectorAll(".side-item").forEach((btn) =>
@@ -229,6 +232,32 @@ async function loadDrives() {
 
     list.appendChild(card);
   }
+
+  const rcard = document.createElement("div");
+  rcard.className = "drive-card";
+  const rico = document.createElement("span");
+  rico.className = "drive-ico";
+  rico.textContent = "🕘";
+  const rbody = document.createElement("div");
+  rbody.style.minWidth = "0";
+  const rname = document.createElement("div");
+  rname.className = "drive-name";
+  rname.textContent = "Recent files";
+  const rpath = document.createElement("div");
+  rpath.className = "drive-path";
+  rpath.textContent = "things opened recently on " + (peerState ? peerState.name : "this device");
+  rbody.append(rname, rpath);
+  rcard.append(rico, rbody);
+  const rchip = document.createElement("span");
+  rchip.className = "badge text-bg-success drive-status";
+  rchip.textContent = "Online";
+  rcard.append(rchip);
+  const ropen = document.createElement("button");
+  ropen.className = "btn btn-sm btn-outline-info";
+  ropen.textContent = "Open";
+  ropen.addEventListener("click", () => showView("recent"));
+  rcard.append(ropen);
+  list.appendChild(rcard);
 }
 
 function openDrive(d) {
@@ -506,6 +535,169 @@ function goUp() {
 }
 
 upBtn.addEventListener("click", goUp);
+
+/* ---------- recent files ---------- */
+
+async function openRecent() {
+  const list = document.getElementById("recentRows");
+  const emptyEl = document.getElementById("recentEmpty");
+  const expiredEl = document.getElementById("recentExpired");
+  document.getElementById("recentDevice").textContent =
+    peerState ? peerState.name : "this device";
+  list.innerHTML = '<tr><td colspan="4" class="text-secondary text-center py-3 small">Loading...</td></tr>';
+  emptyEl.hidden = true;
+  expiredEl.hidden = true;
+  let res;
+  try {
+    res = await fetch(peerPrefix() + "/api/recent");
+  } catch (e) {
+    list.innerHTML = '<tr><td colspan="4" class="text-danger text-center py-3 small">Could not reach server.</td></tr>';
+    return;
+  }
+  if (res.status === 401) {
+    location.href = "/";
+    return;
+  }
+  let data;
+  try { data = await res.json(); } catch (e) { return; }
+  const entries = (data && Array.isArray(data.entries)) ? data.entries : [];
+  list.innerHTML = "";
+  if (entries.length === 0) { emptyEl.hidden = false; return; }
+  for (const en of entries) {
+    const m = findShareForPath(en.path);
+    const tr = document.createElement("tr");
+    tr.className = "file-row";
+    if (m) tr.style.cursor = "pointer";
+    if (m) tr.addEventListener("click", () => jumpToRecent(m, en));
+    const ico = document.createElement("td");
+    ico.textContent = iconFor(en.name);
+    tr.appendChild(ico);
+    const nm = document.createElement("td");
+    const n1 = document.createElement("div");
+    n1.className = "fname";
+    n1.textContent = en.name;
+    const n2 = document.createElement("div");
+    n2.className = "text-secondary small text-truncate";
+    n2.textContent = en.path;
+    n2.style.maxWidth = "60vw";
+    nm.append(n1, n2);
+    tr.appendChild(nm);
+    const sz = document.createElement("td");
+    sz.className = "text-secondary";
+    sz.textContent = en.exists ? formatSize(en.size) : "unavailable";
+    tr.appendChild(sz);
+    const act = document.createElement("td");
+    act.className = "col-actions";
+    const dl = document.createElement("a");
+    dl.className = "btn btn-sm btn-outline-info";
+    dl.href = peerPrefix() + "/api/recent/file?path=" + encodeURIComponent(en.path);
+    dl.dataset.rname = en.name;
+    dl.dataset.rsize = en.size || 0;
+    dl.textContent = "Download";
+    act.appendChild(dl);
+    if (m) {
+      const openBtn = document.createElement("button");
+      openBtn.className = "btn btn-sm btn-outline-secondary ms-1";
+      openBtn.textContent = "Open folder";
+      openBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        jumpToRecent(m, en);
+      });
+      act.appendChild(openBtn);
+      const stash = document.createElement("button");
+      stash.className = "btn btn-sm btn-outline-warning ms-1";
+      stash.title = "Stash in Bag (no copy yet)";
+      stash.textContent = "💼";
+      stash.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        stashRecent(m, en);
+      });
+      act.appendChild(stash);
+    }
+    tr.appendChild(act);
+    list.appendChild(tr);
+  }
+}
+
+function jumpToRecent(m, en) {
+  const d = Array.isArray(drivesCache) ? drivesCache.find((x) => x.id === m.root) : null;
+  current.root = m.root;
+  current.rootName = d ? d.name : current.rootName;
+  current.path = m.path;
+  writable = d ? d.writable : true;
+  showView("files");
+  loadListing();
+}
+
+async function stashRecent(m, en) {
+  const u = addTransferRow(en.name + " → Bag", null);
+  u.status.className = "badge text-bg-warning";
+  u.status.textContent = "Stashing";
+  try {
+    const res = await fetch(peerPrefix() + "/api/bag/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ share: m.root, path: m.path }),
+    });
+    if (res.status === 401) { location.href = "/"; return; }
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      u.status.className = "badge text-bg-" + (data.already ? "secondary" : "success");
+      u.status.textContent = data.already ? "Already in Bag" : "In Bag";
+      u.bar.classList.remove("progress-bar-animated", "progress-bar-striped");
+      u.bar.style.width = "100%";
+      u.pct.textContent = "";
+      refreshBag();
+    } else {
+      u.status.className = "badge text-bg-danger";
+      u.status.textContent = data.error || "Failed";
+      u.bar.classList.remove("progress-bar-animated", "progress-bar-striped");
+    }
+  } catch (err) {
+    u.status.className = "badge text-bg-danger";
+    u.status.textContent = "Failed";
+  }
+}
+
+document.getElementById("recentRows").addEventListener("click", (e) => {
+  const dl = e.target.closest("a[data-rname]");
+  if (!dl) return;
+  e.preventDefault();
+  downloadRecent(dl.dataset.rname, dl.dataset.rsize, decodeURIComponent(dl.href.split("path=")[1] || ""));
+});
+
+function downloadRecent(name, size, url) {
+  if (Number(size) > BLOB_LIMIT) {
+    addHistoryRow(name, "large file - native download", "warning");
+    location.href = url;
+    return;
+  }
+  const u = addTransferRow(name, Number(size) || 0);
+  u.status.className = "badge text-bg-info";
+  u.status.textContent = "Downloading";
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", url);
+  xhr.responseType = "blob";
+  xhr.onprogress = (e) => onTransferProgress(u, e);
+  xhr.onload = () => {
+    if (xhr.status === 401) { location.href = "/"; return; }
+    if (xhr.status !== 200) { setStatus(u, "Failed", "danger"); return; }
+    const blobUrl = URL.createObjectURL(xhr.response);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    setStatus(u, "Done", "success");
+    addHistoryRow(name, "downloaded", "info");
+  };
+  xhr.onerror = () => setStatus(u, "Failed", "danger");
+  xhr.send();
+}
+
+document.getElementById("recentBack").addEventListener("click", () => showView("drives"));
 
 tbody.addEventListener("click", (e) => {
   const row = e.target.closest("tr.folder-row");

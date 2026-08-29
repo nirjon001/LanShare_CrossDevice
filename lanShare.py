@@ -2,6 +2,7 @@ import sys
 import os
 import re
 import time
+import struct
 import socket
 import secrets
 import json
@@ -487,6 +488,98 @@ async def peer_proxy(request: Request, pid: str, path: str = ""):
                                  headers=safe, background=BackgroundTask(r.aclose))
     except httpx.RequestError:
         return JSONResponse({"ok": False, "error": "peer unreachable"}, status_code=502)
+
+
+def resolve_lnk(p: Path):
+    """Pull the target path out of a Windows .lnk shortcut (.lnk = binary file).
+
+    Layout: 76-byte header, LinkFlags at 0x14; if flags & 1 a LinkTargetIDList
+    follows; if flags & 2 a LinkInfo block does. Inside LinkInfo (offsets are
+    relative to the block start) the local base path is a NUL-terminated ANSI
+    string, with an optional UTF-16 variant. We read whichever exists.
+    """
+    try:
+        data = p.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 76 or data[0:4] != b"\x4c\x00\x00\x00":
+        return None
+    flags = struct.unpack_from("<I", data, 0x14)[0]
+    pos = 76
+    if flags & 0x1:  # HasLinkTargetIDList
+        n = struct.unpack_from("<H", data, pos)[0]
+        pos += 2 + n
+    if not (flags & 0x2):  # HasLinkInfo
+        return None
+    header_size = struct.unpack_from("<I", data, pos)[0]
+    if header_size < 24 or pos + header_size > len(data):
+        return None
+    link_flags = struct.unpack_from("<I", data, pos + 4)[0]
+    base_off = struct.unpack_from("<I", data, pos + 12)[0]
+    if not (link_flags & 0x1) or not base_off:
+        return None
+    if header_size >= 28:
+        base_off_u = struct.unpack_from("<I", data, pos + 24)[0]
+        if base_off_u and pos + base_off_u < len(data):
+            raw = data[pos + base_off_u:]
+            end = raw.find(b"\x00\x00")
+            if end != -1:
+                s = raw[:end].decode("utf-16-le", "ignore").strip()
+                if s:
+                    return s
+    if pos + base_off >= len(data):
+        return None
+    end = data.find(b"\x00", pos + base_off)
+    raw = data[pos + base_off:] if end == -1 else data[pos + base_off:end]
+    s = raw.decode("cp1252", "ignore").strip()
+    return s or None
+
+
+@app.get("/api/recent")
+async def api_recent(request: Request, limit: int = 50):
+    """Files recently opened on THIS device (Windows 'Recent' shortcuts)."""
+    if not is_authed(request):
+        return JSONResponse({"error": "auth"}, status_code=401)
+    limit = max(1, min(limit, 200))
+    entries = []
+    if sys.platform.startswith("win"):
+        recent_dir = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Recent"
+        try:
+            lnks = sorted(recent_dir.glob("*.lnk"),
+                          key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
+            lnks = []
+        for p in lnks:
+            if len(entries) >= limit:
+                break
+            target = resolve_lnk(p)
+            if not target:
+                continue
+            tp = Path(target)
+            exists = tp.is_file()
+            entries.append({
+                "name": tp.name,
+                "path": str(tp),
+                "exists": exists,
+                "size": tp.stat().st_size if exists else None,
+                "mtime": p.stat().st_mtime,
+            })
+    return {"ok": True, "entries": entries}
+
+
+@app.get("/api/recent/file")
+async def recent_file(request: Request, path: str = ""):
+    if not is_authed(request):
+        return JSONResponse({"error": "auth"}, status_code=401)
+    if not path:
+        return JSONResponse({"ok": False, "error": "missing path"}, status_code=400)
+    try:
+        target = Path(path).resolve()
+    except OSError:
+        return JSONResponse({"ok": False, "error": "bad path"}, status_code=400)
+    if not target.is_file():
+        return JSONResponse({"ok": False, "error": "not a file"}, status_code=404)
+    return FileResponse(target, filename=target.name)
 
 
 @app.get("/api/bag")

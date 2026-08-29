@@ -142,6 +142,36 @@
         </p>
       </section>
 
+<section id="view-recent" hidden>
+        <div class="crumbbar d-flex align-items-center gap-2 mb-3">
+          <button id="recentBack" class="btn btn-sm btn-outline-secondary" title="Back to drives">&#8592;</button>
+          <strong class="text-body-secondary">Recent files on <span id="recentDevice">this device</span></strong>
+        </div>
+        <p class="text-secondary small">
+          Files opened recently in Windows on the selected device. Click a row to jump to its folder;
+          use <strong>Download</strong> or the &#128230; to send it to this device.
+        </p>
+        <div class="table-responsive">
+          <table class="table table-hover align-middle filetable mb-0">
+            <thead>
+              <tr>
+                <th class="col-icon"></th>
+                <th>Name</th>
+                <th class="col-size">Size</th>
+                <th class="col-actions"></th>
+              </tr>
+            </thead>
+            <tbody id="recentRows"></tbody>
+          </table>
+        </div>
+        <div id="recentExpired" class="empty text-secondary text-center d-none py-4">
+          Windows cleared its Recent list, or this device doesn't keep one.
+        </div>
+        <div id="recentEmpty" class="empty text-secondary text-center d-none py-4">
+          Nothing here yet.
+        </div>
+      </section>
+
     </main>
   </div>
 
