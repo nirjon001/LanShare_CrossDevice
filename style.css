@@ -25,7 +25,7 @@ body {
 #sidebar {
   width: 220px;
   flex: 0 0 220px;
-  background: #0d1424;
+  background: var(--bg-panel);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -68,40 +68,39 @@ body {
   color: #fff;
 }
 
-.side-foot {
-  margin-top: auto;
-  padding: 0.8rem;
-  border-top: 1px solid var(--border);
-}
-.side-chip {
-  font-size: 0.78rem;
-  color: var(--text-dim);
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.4rem 0.6rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.chip-label {
-  display: block;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  font-size: 0.66rem;
-  margin-bottom: 0.15rem;
-}
-
 .app-main {
   flex: 1 1 auto;
   min-width: 0;
 }
 
-/* qBittorrent-style dark top bar */
 .topbar {
-  background: #0d1424;
+  background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
 }
+
+/* breadcrumbs */
+.crumbbar { min-height: 32px; flex-wrap: wrap; }
+.breadcrumb-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+.breadcrumb-wrap::-webkit-scrollbar { display: none; }
+.crumb {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: #b6c2d4;
+  font-size: 0.82rem;
+  padding: 0.2rem 0.7rem;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.crumb:last-child { color: #fff; border-color: var(--brand); }
+.crumb-sep { color: var(--text-dim); font-size: 0.72rem; flex: 0 0 auto; }
 
 /* dashed upload zone */
 .dropzone {
@@ -122,8 +121,9 @@ body {
   transform: translateY(-1px);
 }
 .dz-icon {
-  font-size: 2.2rem;
+  font-size: 2rem;
 }
+.dz-text { font-size: 0.95rem; }
 
 /* PIN login card */
 .login-card {
@@ -156,21 +156,22 @@ body {
 .filetable tbody tr:nth-child(even) {
   background: rgba(255, 255, 255, 0.02);
 }
+.filetable tbody tr.folder-row:hover td { cursor: pointer; }
 
 .fname {
-  max-width: 38vw;
+  max-width: 36vw;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .fileicon {
-  font-size: 1.25rem;
+  font-size: 1.2rem;
 }
 
 .col-icon { width: 2.6rem; }
 .col-size { width: 100px; }
 .col-date { width: 150px; }
-.col-actions { width: 172px; }
+.col-actions { width: 200px; }
 .col-actions .btn {
   padding: 0.15rem 0.5rem;
   font-size: 0.75rem;
@@ -242,9 +243,9 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 46vw;
+  max-width: 40vw;
 }
-.drive-card .drive-status { margin-left: auto; }
+.drive-card .drive-status { margin: 0 0.4rem 0 auto; }
 .drive-card button { flex: 0 0 auto; }
 
 /* phones: sidebar becomes bottom tab bar */
@@ -267,7 +268,7 @@ body {
     z-index: 1000;
     padding-bottom: env(safe-area-inset-bottom);
   }
-  .side-brand, .side-foot { display: none; }
+  .side-brand { display: none; }
   .side-nav {
     flex-direction: row;
     width: 100%;
@@ -285,6 +286,6 @@ body {
     display: none;
   }
   .fname {
-    max-width: 52vw;
+    max-width: 48vw;
   }
 }

@@ -3,6 +3,9 @@ import os
 import socket
 import secrets
 import json
+import string
+import tempfile
+import zipfile
 from pathlib import Path
 from datetime import datetime
 import re
@@ -10,6 +13,7 @@ import uvicorn
 import qrcode
 from fastapi import FastAPI, Request, UploadFile, File, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, JSONResponse
+from starlette.background import BackgroundTask
 from rich.console import Console
 from rich.panel import Panel
 from itsdangerous import URLSafeSerializer, BadSignature
@@ -27,42 +31,84 @@ app = FastAPI()
 console = Console()
 
 
-def default_share_path():
+def slugify(s):
+    out = re.sub(r"[^A-Za-z0-9_-]", "_", s or "")
+    return out or "share"
+
+
+def detect_drives():
+    """Windows: scan C:..Z:. Linux: real mount points only."""
     if sys.platform.startswith("win"):
-        p = Path("G:/lan share")
-        if p.is_dir():
-            return p
-    return Path.home() / "LANShare"
+        drives = []
+        for letter in string.ascii_uppercase:
+            p = Path(f"{letter}:/")
+            if p.exists():
+                drives.append({
+                    "id": letter,
+                    "name": f"Drive {letter}:",
+                    "path": str(p),
+                    "type": "drive",
+                    "writable": True,
+                })
+        return drives
+
+    drives = []
+    skip = {
+        "proc", "sysfs", "devpts", "tmpfs", "devtmpfs", "cgroup",
+        "cgroup2", "pstore", "securityfs", "debugfs", "tracefs",
+        "fusectl", "configfs", "binfmt_misc", "mqueue", "hugetlbfs",
+        "overlay", "autofs",
+    }
+    try:
+        lines = Path("/proc/mounts").read_text().splitlines()
+    except OSError:
+        return drives
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        mount, fstype = parts[1], parts[2]
+        if fstype in skip or mount in ("/proc", "/sys", "/dev"):
+            continue
+        label = "Root" if mount == "/" else mount.rstrip("/").split("/")[-1] or mount
+        drives.append({
+            "id": slugify(mount),
+            "name": f"/{label}",
+            "path": mount,
+            "type": "drive",
+            "writable": True,
+        })
+    return drives
 
 
-def load_config():
-    default = [{"id": "lanshare", "name": "LAN Share", "path": str(default_share_path())}]
-    if not CONFIG_FILE.exists():
-        CONFIG_FILE.write_text(json.dumps({"shares": default}, indent=2), encoding="utf-8")
-        return default
+def build_shares():
+    shares = []
     try:
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        shares = data.get("shares") or default
+        for s in data.get("shares", []):
+            shares.append({
+                "id": slugify(s.get("id") or s.get("path")),
+                "name": s.get("name") or str(s.get("path")),
+                "path": str(s.get("path", "")),
+                "type": "share",
+                "writable": bool(s.get("writable", True)),
+            })
     except (json.JSONDecodeError, OSError):
-        shares = default
-    if not shares:
-        shares = default
+        pass
+    for d in detect_drives():
+        if d["id"] not in {s["id"] for s in shares}:
+            shares.append(d)
     return shares
 
 
-SHARES = load_config()
-active = {"id": SHARES[0]["id"]}
+SHARES = build_shares()
 
 
-def active_share():
+def share_by_id(sid):
     for s in SHARES:
-        if s["id"] == active["id"]:
+        if s["id"] == sid:
             return s
-    return SHARES[0]
-
-
-def current_folder():
-    return Path(active_share()["path"]).resolve()
+    return None
 
 
 def is_authed(request):
@@ -75,25 +121,23 @@ def is_authed(request):
         return False
 
 
-def list_files(folder):
-    return [
-        p for p in folder.iterdir()
-        if p.is_file() and not p.name.startswith(".")
-    ]
+def safe_rel(share, relpath):
+    """Resolve a relative path inside a share. Returns (base, target) or (None, None)."""
+    base = Path(share["path"]).resolve()
+    rel = (relpath or "").lstrip("/\\")
+    target = (base / rel).resolve() if rel else base
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return None, None
+    return base, target
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     ok = is_authed(request)
-    folder = current_folder()
-    try:
-        files = list_files(folder)
-    except OSError:
-        files = []
     page = TEMPLATE_FILE.read_text(encoding="utf-8")
     page = page.replace("{{lan_ip}}", get_lan_ip())
-    page = page.replace("{{count}}", str(len(files)))
-    page = page.replace("{{share_name}}", active_share()["name"])
     if ok:
         page = page.replace("{{login_hidden}}", "hidden")
         page = page.replace("{{app_hidden}}", "")
@@ -117,57 +161,59 @@ async def login(request: Request):
     return RedirectResponse("/?error=1", status_code=303)
 
 
-@app.get("/api/files")
-async def api_files(request: Request):
+@app.get("/api/drives")
+async def api_drives(request: Request):
     if not is_authed(request):
         return JSONResponse({"error": "auth"}, status_code=401)
-    folder = current_folder()
-    items = []
-    try:
-        entries = list_files(folder)
-    except OSError as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-    for p in entries:
-        st = p.stat()
-        items.append({"name": p.name, "size": st.st_size, "mtime": st.st_mtime})
-    items.sort(key=lambda d: d["mtime"], reverse=True)
-    return items
-
-
-@app.get("/api/shares")
-async def api_shares(request: Request):
-    if not is_authed(request):
-        return JSONResponse({"error": "auth"}, status_code=401)
-    result = []
+    out = []
     for s in SHARES:
-        p = Path(s["path"])
-        result.append({
+        out.append({
             "id": s["id"],
             "name": s["name"],
             "path": s["path"],
-            "online": p.is_dir(),
-            "selected": s["id"] == active["id"],
+            "type": s["type"],
+            "writable": s["writable"],
+            "online": Path(s["path"]).is_dir(),
         })
-    return result
+    return out
 
 
-@app.post("/api/share")
-async def select_share(request: Request):
+@app.get("/api/list")
+async def api_list(request: Request, root: str, path: str = ""):
     if not is_authed(request):
         return JSONResponse({"error": "auth"}, status_code=401)
+    share = share_by_id(root)
+    if share is None:
+        return JSONResponse({"ok": False, "error": "no such share"}, status_code=404)
+    base, target = safe_rel(share, path)
+    if target is None:
+        return JSONResponse({"ok": False, "error": "outside share"}, status_code=403)
+    if not target.is_dir():
+        return JSONResponse({"ok": False, "error": "not a folder"}, status_code=404)
+    dirs, files = [], []
     try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"ok": False, "error": "invalid JSON body"}, status_code=400)
-    sid = (body or {}).get("id")
-    for s in SHARES:
-        if s["id"] == sid:
-            if not Path(s["path"]).is_dir():
-                return JSONResponse({"ok": False, "error": "path does not exist"}, status_code=400)
-            active["id"] = sid
-            console.print(f"[yellow]switched to[/yellow] [cyan]{s['name']}[/cyan] -> {s['path']}")
-            return {"ok": True}
-    return JSONResponse({"ok": False, "error": "no such share"}, status_code=404)
+        for p in target.iterdir():
+            try:
+                if p.is_dir():
+                    dirs.append({"name": p.name, "mtime": p.stat().st_mtime})
+                elif p.is_file():
+                    st = p.stat()
+                    files.append({"name": p.name, "size": st.st_size, "mtime": st.st_mtime})
+            except OSError:
+                dirs.append({"name": p.name, "mtime": 0, "locked": True})
+    except OSError as e:
+        return JSONResponse({"ok": False, "error": f"cannot read folder: {e}"}, status_code=403)
+    dirs.sort(key=lambda d: d["name"].lower())
+    files.sort(key=lambda d: d["name"].lower())
+    return {
+        "ok": True,
+        "root": root,
+        "path": path,
+        "name": target.name or share["name"],
+        "writable": share["writable"],
+        "dirs": dirs,
+        "files": files,
+    }
 
 
 @app.get("/style.css")
@@ -202,10 +248,17 @@ async def icon(icon_name: str):
 async def upload(request: Request, files: list[UploadFile] = File(...)):
     if not is_authed(request):
         return JSONResponse({"error": "auth"}, status_code=401)
-    folder = current_folder()
+    share = share_by_id(request.query_params.get("root", ""))
+    if share is None:
+        return JSONResponse({"ok": False, "error": "no such share"}, status_code=404)
+    if not share["writable"]:
+        return JSONResponse({"ok": False, "error": "this share is read-only"}, status_code=403)
+    base, target = safe_rel(share, request.query_params.get("path", ""))
+    if target is None or not target.is_dir():
+        return JSONResponse({"ok": False, "error": "bad folder"}, status_code=400)
     for f in files:
         name = safe_filename(f.filename)
-        dest = unique_path(folder, name)
+        dest = unique_path(target, name)
         try:
             with open(dest, "wb") as out:
                 while True:
@@ -215,52 +268,103 @@ async def upload(request: Request, files: list[UploadFile] = File(...)):
                     out.write(chunk)
         except OSError as e:
             return JSONResponse({"ok": False, "error": f"could not save: {e}"}, status_code=500)
-        console.print(f"[green]saved[/green] [cyan]{dest.name}[/cyan] -> {folder}")
+        console.print(f"[green]saved[/green] [cyan]{dest}[/cyan]")
     return {"ok": True, "saved": len(files)}
 
 
-@app.get("/files/{name}")
-async def download(request: Request, name: str):
+@app.get("/files/{share}/{subpath:path}")
+async def download(request: Request, share: str, subpath: str = ""):
     if not is_authed(request):
         return RedirectResponse("/", status_code=307)
-    path = resolve_upload_path(current_folder(), name)
-    if path is None:
+    s = share_by_id(share)
+    if s is None:
         return RedirectResponse("/", status_code=307)
-    return FileResponse(path, filename=path.name)
+    base, target = safe_rel(s, subpath)
+    if target is None or not target.is_file():
+        return RedirectResponse("/", status_code=307)
+    return FileResponse(target, filename=target.name)
 
 
-@app.head("/files/{name}")
-async def download_head(request: Request, name: str):
+@app.head("/files/{share}/{subpath:path}")
+async def download_head(request: Request, share: str, subpath: str = ""):
     if not is_authed(request):
         return Response(status_code=401)
-    path = resolve_upload_path(current_folder(), name)
-    if path is None:
+    s = share_by_id(share)
+    if s is None:
+        return Response(status_code=404)
+    base, target = safe_rel(s, subpath)
+    if target is None or not target.is_file():
         return Response(status_code=404)
     return Response(headers={
-        "Content-Length": str(path.stat().st_size),
+        "Content-Length": str(target.stat().st_size),
         "Content-Type": "application/octet-stream",
         "Accept-Ranges": "bytes",
     })
 
 
-@app.post("/files/{name}/delete")
-async def delete(request: Request, name: str):
+@app.get("/zip/{share}/{subpath:path}")
+async def zip_folder(request: Request, share: str, subpath: str = ""):
+    if not is_authed(request):
+        return RedirectResponse("/", status_code=307)
+    s = share_by_id(share)
+    if s is None:
+        return RedirectResponse("/", status_code=307)
+    base, target = safe_rel(s, subpath)
+    if target is None or not target.is_dir():
+        return RedirectResponse("/", status_code=307)
+    folder_name = target.name or s["name"]
+    fd, tmp = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root_dir, _, fnames in os.walk(target):
+                root_p = Path(root_dir)
+                for fn in fnames:
+                    full = root_p / fn
+                    arc = str(Path(folder_name) / full.relative_to(target))
+                    zf.write(full, arc)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return JSONResponse({"ok": False, "error": "could not create zip"}, status_code=500)
+    console.print(f"[magenta]zipped[/magenta] [cyan]{target}[/cyan] -> {folder_name}.zip")
+    return FileResponse(
+        tmp,
+        filename=f"{folder_name}.zip",
+        media_type="application/zip",
+        background=BackgroundTask(_remove_file, tmp),
+    )
+
+
+@app.post("/files/{share}/{subpath:path}/delete")
+async def delete(request: Request, share: str, subpath: str = ""):
     if not is_authed(request):
         return JSONResponse({"error": "auth"}, status_code=401)
-    path = resolve_upload_path(current_folder(), name)
-    if path is None:
-        return JSONResponse({"ok": False, "error": "file not found on this share"}, status_code=404)
+    s = share_by_id(share)
+    if s is None:
+        return JSONResponse({"ok": False, "error": "no such share"}, status_code=404)
+    if not s["writable"]:
+        return JSONResponse({"ok": False, "error": "this share is read-only"}, status_code=403)
+    base, target = safe_rel(s, subpath)
+    if target is None or not target.is_file():
+        return JSONResponse({"ok": False, "error": "file not found"}, status_code=404)
     try:
-        path.unlink()
+        target.unlink()
     except PermissionError:
-        return JSONResponse(
-            {"ok": False, "error": "file is locked or read-only"},
-            status_code=423,
-        )
+        return JSONResponse({"ok": False, "error": "file is locked or read-only"}, status_code=423)
     except OSError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-    console.print(f"[red]deleted[/red] [cyan]{path.name}[/cyan]")
+    console.print(f"[red]deleted[/red] [cyan]{target}[/cyan]")
     return {"ok": True}
+
+
+def _remove_file(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def safe_filename(filename):
@@ -277,18 +381,6 @@ def unique_path(folder, filename):
         if not candidate.exists():
             return candidate
     return folder / f"{stem}-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}{suffix}"
-
-
-def resolve_upload_path(folder, name):
-    candidate = (folder / safe_filename(name)).resolve()
-    folder_r = folder.resolve()
-    try:
-        candidate.relative_to(folder_r)
-    except ValueError:
-        return None
-    if not candidate.is_file():
-        return None
-    return candidate
 
 
 def get_lan_ip():
@@ -308,12 +400,17 @@ def print_qr(url):
 
 
 def print_startup(url):
+    drives = [s for s in SHARES if s["type"] == "drive"]
+    shares = [s for s in SHARES if s["type"] != "drive"]
+    drive_line = ", ".join(s["id"] if s["id"].endswith(":") else s["name"] for s in drives) or "none"
     panel = Panel(
         f"[bold]LAN Share is running[/bold]\n\n"
         f"PIN: [bold yellow]{PIN}[/bold yellow]  (enter this on any device)\n\n"
-        f"Open on any device on this WiFi:\n[bold cyan]{url}[/bold cyan]\n\n"
-        f"Active share: [green]{active_share()['name']}[/green] -> {current_folder()}\n"
-        f"Edit [cyan]{CONFIG_FILE}[/cyan] to add drives/shares.\n",
+        f"Open on any device on this WiFi:\n[bold cyan]{url}[/bold cyan] (or scan the QR)\n\n"
+        f"Detected drives: [green]{drive_line}[/green]\n"
+        + (f"Extra shares: {', '.join(s['name'] for s in shares)}\n" if shares else "")
+        + f"Edit [cyan]{CONFIG_FILE}[/cyan] to add more shares or set writable:false.\n"
+        f"WARNING: any device with the PIN can read/write these drives.\n",
         title="[bold]LAN Share[/bold]",
         border_style="cyan",
     )
@@ -323,11 +420,6 @@ def print_startup(url):
 
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
-    folder = current_folder()
-    try:
-        folder.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        console.print(f"[yellow]warning: could not create {folder}: {e}[/yellow]")
     url = f"http://{get_lan_ip()}:8000"
     print_startup(url)
     uvicorn.run(app, host="0.0.0.0", port=8000)

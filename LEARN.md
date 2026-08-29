@@ -9,7 +9,7 @@ Each section is ONE idea. For every idea there is:
   the name.
 - **Do it yourself** — a 2-5 minute task. Do these until the answer comes without thinking.
 
-The whole app = ~38 ideas. One page a day = a month to real ownership.
+The whole app = ~44 ideas. One page a day = a month to real ownership.
 
 ## The 20-minute rule
 
@@ -33,18 +33,23 @@ Never move to the next section with an unchecked gap — gaps compound.
 
 ### 3. Path object (pathlib)
 - **What it is**: `Path(...)` is like a string that knows how to join, check existence, resolve.
-- **Find it**: `lanShare.py → BASE_DIR`, `current_folder()`, `resolve_upload_path()`
+- **Find it**: `lanShare.py → BASE_DIR`, `safe_rel()` (uses `resolve()` + `relative_to`),
+  `unique_path()` (uses `.stem`/`.suffix`/`exists()`)
 - **Do it**: in Python REPL, `p = Path("C:/")`; print `p / "x"`, `p.exists()`, `p.resolve()`.
 
 ### 4. Config file (shares.json)
-- **What it is**: the list of folders the app serves lives in a separate file so you don't edit code.
-- **Find it**: `lanShare.py → load_config()`, `active_share()`, `current_folder()`
-- **Do it**: add a new share to `shares.json` pointing at any folder with files. Restart and check the Drives tab.
+- **What it is**: extra folders to serve live in a separate file so you don't edit code. Each share can
+  say `"writable": false` to make it read-only. `/api/drives` = detected drives + these shares.
+- **Find it**: `lanShare.py → build_shares()`, `share_by_id()`; the file `shares.json`
+- **Do it**: add a share pointing at any folder with files, restart, and check the Drives tab.
 
-### 5. Global mutable "state"
-- **What it is**: `active = {"id": ...}` remembers which share is selected. Any function can read/change it.
-- **Find it**: `lanShare.py → active`, `active_share()`
-- **Do it**: add a `console.print("active id is", active["id"])` inside `current_folder()`.
+### 5. Stateless requests (there is no "current folder")
+- **What it is**: the server never remembers which folder any client is looking at. Every request
+  carries its own `root` + `path`. No `active = {...}` global, nothing to go stale.
+- **Find it**: every route signature, e.g. `lanShare.py → api_list(root, path)`; the query string is
+  built by `lanshare.js → listQuery()`
+- **Do it**: open two browser tabs in different folders — click around in one; the other still shows
+  its own folder. Open the second tab again (reload) — it stays. Nothing is shared server-side.
 
 ---
 
@@ -57,37 +62,45 @@ Never move to the next section with an unchecked gap — gaps compound.
 
 ### 7. Route = URL → function mapping
 - **What it is**: `@app.get("/path")` says "when someone GETs this URL, call this function".
-- **Find it**: `lanShare.py → index()`, `api_files()`, `api_shares()`, `select_share()`, `upload()`, `delete()`, `download()`
-- **Do it**: add `@app.get("/ping")` returning `{"pong": True}`; visit `/ping`.
+- **Find it**: `lanShare.py → index()`, `login()`, `api_drives()`, `api_list()`, `upload()`,
+  `download()`, `download_head()`, `zip_folder()`, `delete()`
+- **Do it**: add `@app.get("/ping")` returning `{"pong": True}`; visit `/ping`. (Now add auth to it —
+  see idea 15.)
 
-### 8. Path parameters `{name}`
-- **What it is**: part of the URL is a variable that gets passed to the function.
-- **Find it**: `lanShare.py → download(name)` (`/files/{name}`), `delete(name)`, `icon(icon_name)`
-- **Do it**: add a route `/hello/{who}` returning the value of `who`.
+### 8. Path parameters and the catch-all
+- **What it is**: part of the URL is a variable passed to the function. `{subpath:path}` is a
+  *catch-all*: it matches any number of segments including slashes (`/files/C/Windows/System32/x.ini`).
+- **Find it**: `lanShare.py → download(share, subpath)` (`/files/{share}/{subpath:path}`),
+  `delete(share, subpath)`, `zip_folder(share, subpath)`, `icon(icon_name)`
+- **Do it**: trace how a URL like `/files/G/Downloads/movie.mp4` fills the two parameters.
 
 ### 9. Request object
 - **What it is**: everything the client (browser/phone) sends — headers, cookies, body.
-- **Find it**: `request: Request` in every route, e.g. `lanShare.py → index(request)`
+- **Find it**: `request: Request` in every route, e.g. `lanShare.py → index(request)`;
+  `request.query_params.get(...)` in `upload()` reads `root`/`path`
 - **Do it**: `return {"cookies": request.cookies}` in a test route and log in with a cookie.
 
 ### 10. Response types
-- **What it is**: a route returns different types of answers: HTML, JSON, a file, a redirect, or just a status.
-- **Find it**: `HTMLResponse` in `index()`; `JSONResponse` in `api_files()` / `select_share()` / `upload()`;
-  `RedirectResponse` in `login()` / `download()`; `FileResponse` in `download()` and the css/js icons routes;
+- **What it is**: a route returns different kinds of answers: HTML, JSON, a file, a redirect, or a status.
+- **Find it**: `HTMLResponse` in `index()`; `JSONResponse` in `api_drives()` / `api_list()` /
+  `upload()` / `delete()`; `RedirectResponse` in `login()` / `download()` / `zip_folder()`;
+  `FileResponse` in `download()` / `zip_folder()` and the css/js/icons routes;
   bare `Response(status_code=...)` in `download_head()`
-- **Do it**: change the "file missing" case in `download_head()` from `Response(404)` to
+- **Do it**: change the "missing file" case in `download_head()` to
   `JSONResponse({"error":"missing"}, status_code=404)` and HEAD a missing file.
 
 ### 11. Status codes
-- **What it is**: 200 ok, 303 redirect after login, 401 unauthorized, 404 not found, 423 locked.
+- **What it is**: 200 ok, 303 redirect after login, 401 unauthorized, 403 outside a share / read-only,
+  404 not found, 423 locked file.
 - **Find it**: every `status_code=` in `lanShare.py`
 - **Do it**: make the delete route return 418 when the file is "not found".
 
-### 12. Form vs JSON body
-- **What it is**: `await request.form()` reads form-encoded fields (login); `await request.json()`
-  reads a JSON body (share select).
-- **Find it**: `lanShare.py → login()` (form), `select_share()` (json)
-- **Do it**: change `login()` to parse JSON too (don't worry about the HTML, just curl it).
+### 12. Three ways a client sends data
+- **What it is**: form fields (`login`), query parameters (`/api/list?root=C&path=`), and path
+  parameters (`/files/C/Folder/file.txt`). Each is read with a different API.
+- **Find it**: `lanShare.py → login()` (`await request.form()`), `api_list(root, path)`,
+  read via `request.query_params` in `upload()`
+- **Do it**: change `login()` to also accept `?pin=1234` in the URL.
 
 ---
 
@@ -107,16 +120,18 @@ Never move to the next section with an unchecked gap — gaps compound.
 ### 15. The auth guard pattern
 - **What it is**: at the top of every protected route: "if not authed, bail out early."
 - **Find it**: `lanShare.py → is_authed()` — used at the top of every route that needs it
-- **Do it**: add auth protection to one route that lacks it (your `/ping` from idea 7).
+- **Do it**: add auth protection to a route that lacks it (your `/ping` from idea 7).
 
 ### 16. Path traversal defence
-- **What it is**: attack where `../` reaches outside the folder. Defence: `resolve()` then
-  `relative_to()` must stay inside.
-- **Find it**: `lanShare.py → resolve_upload_path()`
-- **Do it**: curl `/files/..%2F..%2Fsecret.txt` — the file must never resolve outside the share.
+- **What it is**: attack where `../` reaches outside the allowed folder. Defence: `resolve()` then
+  `relative_to()` must stay inside the share root. One helper (`safe_rel`) guards download, zip,
+  upload and delete.
+- **Find it**: `lanShare.py → safe_rel()`; callers include `download()`, `zip_folder()`, `delete()`
+- **Do it**: curl `/files/C/..%2F..%2FWindows/win.ini` — it must bounce back to the login page.
+  Try the same through `/zip` and `/api/list?root=C&path=..%2F..%2FWindows`.
 
 ### 17. Filename sanitising
-- **What it is**: strip `/` and `\` from a name so it can't escape or create subfolders.
+- **What it is**: strip `/` and `\` from an uploaded name so it can't escape or create subfolders.
 - **Find it**: `lanShare.py → safe_filename()`
 - **Do it**: call it with `"../../evil.txt"` in a REPL and guess the result first.
 
@@ -146,19 +161,20 @@ Never move to the next section with an unchecked gap — gaps compound.
 
 ### 21. DOM = the page as a tree
 - **What it is**: `document.getElementById("fileRows")` grabs a hole in the HTML that JS fills.
-- **Find it**: `lanshare.js → const tbody`; HTML → `id="fileRows"`
+- **Find it**: `lanshare.js → const tbody`; HTML → `id="fileRows"`, `id="breadcrumb"`,
+  `id="drivesList"`, `id="dropzoneLabel"`
 - **Do it**: in the browser console type `document.getElementById("fileCount").textContent = "hi"`.
 
 ### 22. Building HTML with code
 - **What it is**: `createElement` + `appendChild` build table rows without injecting strings → safe
   against script injection.
-- **Find it**: `lanshare.js → loadFiles()` (the `for (const f of files)` row-building loop)
+- **Find it**: `lanshare.js → loadListing()` (the `for (const item of all)` row-building loop)
 - **Do it**: rewrite the size cell using `innerHTML` instead and spot why it's riskier.
 
 ### 23. fetch = AJAX call
 - **What it is**: JS asks the server for JSON without reloading the page; `await` waits for it.
-- **Find it**: `lanshare.js → loadFiles()`, `loadShares()`
-- **Do it**: make `loadFiles()` show "Loading..." until the request returns.
+- **Find it**: `lanshare.js → loadListing()` (fetches `/api/list`), `loadDrives()` (fetches `/api/drives`)
+- **Do it**: make `loadListing()` show "Loading..." until the request returns.
 
 ### 24. XHR + upload progress
 - **What it is**: `XMLHttpRequest` gives `onprogress` events → live progress bar. `fetch` can't report
@@ -172,27 +188,29 @@ Never move to the next section with an unchecked gap — gaps compound.
 - **Find it**: `lanshare.js → downloadFile()`; the limit is `BLOB_LIMIT`
 - **Do it**: lower `BLOB_LIMIT` to 1 MB, download the big zip, confirm the "native download" fallback.
 
-### 26. Template literals
-- **What it is**: backtick strings with `${variable}`.
-- **Find it**: `lanshare.js → downloadFile()`, `uploadFiles()`, and the delete `confirm(...)`
-- **Do it**: change the delete `confirm` text to include the file size.
+### 26. Building safe URLs: encodeURIComponent
+- **What it is**: filenames can contain `/`, `#`, `?`, spaces, non-ASCII. Encoding each segment turns
+  them into `%XX` so they survive inside a URL.
+- **Find it**: `lanshare.js → fileUrl()`, `zipUrl()`, `deleteUrl()`, `listQuery()`
+- **Do it**: make a folder `my photos #2` and watch what the URL request line contains (DevTools → Network).
 
 ### 27. event.preventDefault
 - **What it is**: stop the browser's default behaviour (navigating/opening a file) and do your own thing.
-- **Find it**: `lanshare.js → the body drag handlers` and the Download click handler
+- **Find it**: `lanshare.js → the body drag handlers` and the Download click handler (`data-dl`)
 - **Do it**: remove `preventDefault` from the drag handlers, drop a file — the browser navigates to it.
 
 ### 28. Event delegation
 - **What it is**: one listener on the table handles clicks on ALL rows, current and future. `closest()`
-  walks UP from the click to find the row's element.
-- **Find it**: `lanshare.js → tbody.addEventListener("click", ...)`; the delete branch uses
-  `closest("[data-del]")`
+  walks UP from the click to find the row's element. One handler serves the zip, download AND delete
+  buttons — see the two `tbody.addEventListener("click", ...)` blocks.
+- **Find it**: `lanshare.js → tbody.addEventListener("click", ...)` (both of them);
+  the delete branch uses `closest("[data-del]")`
 - **Do it**: explain to a friend how `closest("[data-del]")` finds the button's row.
 
 ### 29. Data attributes
-- **What it is**: `data-dl`, `data-del`, `data-size` are extra fields glued to HTML elements so JS can
-  read the row's file name.
-- **Find it**: `lanshare.js → loadFiles()` (the Download/Delete buttons), then the click handler
+- **What it is**: `data-zip`, `data-dl`, `data-name`, `data-size`, `data-del` are extra fields glued to
+  HTML elements so JS can read the row's file name and size.
+- **Find it**: `lanshare.js → loadListing()` (button creation), then the click handlers
 - **Do it**: add `data-date` to each row and print it in the click handler.
 
 ### 30. Sets for lookups
@@ -201,37 +219,46 @@ Never move to the next section with an unchecked gap — gaps compound.
 - **Do it**: add `.json` to the DOC set.
 
 ### 31. Early-return guard
-- **What it is**: `if (appView.hidden) return;` stops code that shouldn't run on the login screen — this
-  killed your infinite reload bug.
-- **Find it**: `lanshare.js → loadFiles()` (first line)
+- **What it is**: `if (appView.hidden || !current.root) return;` stops code that shouldn't run on the
+  login screen — this killed your infinite reload bug.
+- **Find it**: `lanshare.js → loadListing()` (first line)
 - **Do it**: temporarily remove the line, open the PIN page, and watch the reload loop.
+
+### 32. The JS state machine
+- **What it is**: `current = { root, path, rootName }` IS the browser's memory of where you are.
+  Opening a folder = mutate `current.path` then re-`loadListing()`. The breadcrumb is built from the
+  same segments.
+- **Find it**: `lanshare.js → current`, `openDrive()`, `openFolder()`, `goUp()`, `renderBreadcrumb()`
+- **Do it**: browse into a folder while `console.log(current)` — type it in the console.
 
 ---
 
 ## Group F — the visible UI (HTML + CSS)
 
-### 32. hidden attribute + two views
+### 33. hidden attribute + two views
 - **What it is**: the server decides which of two blocks (login vs app) gets `hidden`; the other shows.
-- **Find it**: `lanshare.html → id="loginView"`, `id="appView"`; server logic `index()`
+  The app itself swaps between `view-files` and `view-drives`.
+- **Find it**: `lanshare.html → id="loginView"`, `id="appView"`, `id="view-files"`, `id="view-drives"`;
+  server logic `index()`; client logic `lanshare.js → showView()`
 - **Do it**: swap the two `..._hidden` placeholder conditions in `index()` and log in — see the flip.
 
-### 33. Template placeholders
+### 34. Template placeholders
 - **What it is**: `{{lan_ip}}` is a marker the server replaces before sending HTML (`page.replace`).
-- **Find it**: `lanShare.py → index()` (the four `.replace(...)` calls)
+- **Find it**: `lanShare.py → index()` (the `.replace(...)` calls)
 - **Do it**: add a `{{year}}` placeholder and replace it in `index()`.
 
-### 34. CSS Flexbox sidebar
+### 35. CSS Flexbox sidebar
 - **What it is**: `display:flex` lays content in a row/column; `flex: 0 0 220px` keeps the sidebar a
   fixed width.
 - **Find it**: `style.css → .app-shell`, `#sidebar`
 - **Do it**: change the sidebar width to 150px and watch the layout reflow.
 
-### 35. Media queries (mobile switch)
+### 36. Media queries (mobile switch)
 - **What it is**: different CSS on small screens — the sidebar becomes a bottom tab bar.
 - **Find it**: `style.css → @media (max-width: 767px)`
 - **Do it**: change 767 to 900 and resize.
 
-### 36. Responsive hiding of columns
+### 37. Responsive hiding of columns
 - **What it is**: hide Size/Date on phones with `display:none` so Name + buttons survive.
 - **Find it**: `style.css → inside the @media block`, the `.col-size`/`.col-date` rules
 - **Do it**: comment those two lines out and resize — see the mess.
@@ -240,21 +267,54 @@ Never move to the next section with an unchecked gap — gaps compound.
 
 ## Group G — making it feel like an app (PWA)
 
-### 37. Manifest
+### 38. Manifest
 - **What it is**: a JSON file that tells browsers "this site is an installable app" (name, icons, theme).
 - **Find it**: `manifest.webmanifest`; served by `lanShare.py → manifest()`
 - **Do it**: change `theme_color` and `background_color`, refresh the phone.
 
-### 38. Service worker
+### 39. Service worker
 - **What it is**: a background script that caches the app shell and intercepts requests (network-first,
   cache fallback).
 - **Find it**: `sw.js`; served by `lanShare.py → service_worker()`
 - **Do it**: in browser DevTools → Application → Service Workers → Update; watch it re-cache.
 
-### 39. Install prompt
+### 40. Install prompt
 - **What it is**: the browser's install event; we grab it and expose our own "Install App" button.
 - **Find it**: `lanshare.js → beforeinstallprompt`, `installBtn`
 - **Do it**: break the service-worker registration and see the install button disappear.
+
+---
+
+## Group H — the network-share browser (v2, this is the real feature)
+
+### 41. Drive detection
+- **What it is**: Windows: loop `C:`..`Z:` and keep the letters that exist. Linux: read `/proc/mounts`
+  and drop virtual filesystems (tmpfs, sysfs…). The same piece of code, two operating systems.
+- **Find it**: `lanShare.py → detect_drives()`; result merged with extra shares in `build_shares()`
+- **Do it**: plug in a USB stick and rerun — the new drive appears in the Drives tab without restart
+  code changes (run the server again) and is browsable in the browser.
+
+### 42. Zipping a folder on demand
+- **What it is**: `zipfile` walks the folder and writes members with a relative `arcname`, so the zip
+  unzips into a clean subfolder. The temp zip is deleted after the browser finishes downloading it via
+  a `BackgroundTask`.
+- **Find it**: `lanShare.py → zip_folder()`; cleanup helper `_remove_file()`
+- **Do it**: change the arcname to the raw absolute path and inspect the zip layout — see why relative
+  names are nicer.
+
+### 43. Read-only shares
+- **What it is**: a share can be `writable: false`; upload and delete then return 403 before touching
+  the disk. Drives show an "Online / Read-only" badge instead of the writable one.
+- **Find it**: `lanShare.py → upload()` and `delete()` (the `if not share["writable"]` guard);
+  `lanshare.js → loadDrives()` badge + `delete()` button check
+- **Do it**: set `"writable": false` on the lanshare share, restart, try an upload from the phone — 403.
+
+### 44. The Drives view
+- **What it is**: `/api/drives` returns the full list (type, path, writable, online). The parent "Open"
+  button calls `openDrive()` which sets `current.root` and jumps to the Files view — the state machine
+  in action.
+- **Find it**: `lanShare.py → api_drives()`; `lanshare.js → loadDrives()`, `openDrive()`
+- **Do it**: add a share with a path that doesn't exist; it should show "Offline" and no Open button.
 
 ---
 
@@ -262,16 +322,18 @@ Never move to the next section with an unchecked gap — gaps compound.
 
 Take `lanShare.py` (the server) and write it from an empty file in under 40 minutes with ONLY this checklist:
 
-1. imports + paths + config
+1. imports + paths + config (`detect_drives` + `build_shares`)
 2. PIN + signed-cookie signer + `is_authed`
 3. `GET /` serving the HTML with placeholders swapped
 4. `POST /login` set cookie
-5. `GET /api/files` + `GET /api/shares` + `POST /api/share`
-6. `POST /upload` streaming big files to disk (unique name)
-7. `GET /files/{name}` + `HEAD` with path-traversal guard
-8. `POST /files/{name}/delete`
-9. startup panel (rich) + QR + uvicorn
+5. `GET /api/drives` (drives + shares) and `GET /api/list?root=&path=`
+6. `POST /upload?root=&path=` streaming big files to disk (unique name)
+7. `GET /files/{share}/{subpath:path}` + `HEAD`, and `GET /zip/{share}/{subpath:path}`
+8. `POST /files/{share}/{subpath:path}/delete`
+9. the `safe_rel` traversal guard used by every filesystem route
+10. startup panel (rich) + QR + uvicorn
 
-Then do the same for `lanshare.js`: load files, build rows, click handling, XHR progress upload,
-blob download, and the 401 guard. If a step stalls longer than 20 minutes, stop, look it up, and do it
-from memory the next day. Repeat weekly.
+Then do the same for `lanshare.js`: `loadDrives`, `openDrive`, `loadListing` + breadcrumb render,
+folder navigation (state machine), XHR progress uploads, blob download + native fallback, and the
+401 guard. If a step stalls longer than 20 minutes, stop, look it up, and do it from memory the next
+day. Repeat weekly.

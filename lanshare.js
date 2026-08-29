@@ -27,6 +27,7 @@ function formatSize(n) {
 }
 
 function fmtDate(ts) {
+  if (!ts) return "";
   return new Date(ts * 1000).toLocaleString(undefined, {
     month: "short",
     day: "numeric",
@@ -36,16 +37,22 @@ function fmtDate(ts) {
 }
 
 const appView = document.getElementById("appView");
+const viewFiles = document.getElementById("view-files");
+const viewDrives = document.getElementById("view-drives");
 const tbody = document.getElementById("fileRows");
 const empty = document.getElementById("emptyState");
 const dropzone = document.getElementById("dropzone");
+const dropzoneLabel = document.getElementById("dropzoneLabel");
 const fileInput = document.getElementById("fileInput");
+const breadcrumb = document.getElementById("breadcrumb");
+const upBtn = document.getElementById("upBtn");
 const transferList = document.getElementById("transferList");
 const clearTransfers = document.getElementById("clearTransfers");
-const shareNameChip = document.getElementById("shareNameChip");
 const installBtn = document.getElementById("installBtn");
 
 let inFlight = 0;
+let current = { root: null, path: "", rootName: "" };
+let writable = true;
 
 function getTransferEmpty() {
   return document.getElementById("transferEmpty");
@@ -66,112 +73,58 @@ function hideTransferEmpty() {
   if (t) t.remove();
 }
 
-async function loadFiles() {
-  if (appView.hidden) return;
-  let res;
-  try {
-    res = await fetch("/api/files");
-  } catch (e) {
-    return;
-  }
-  if (res.status === 401) {
-    location.href = "/";
-    return;
-  }
-  let files;
-  try {
-    files = await res.json();
-  } catch (e) {
-    return;
-  }
-  if (!Array.isArray(files)) return;
+/* ---------- path helpers ---------- */
 
-  document.getElementById("fileCount").textContent =
-    files.length + " file" + (files.length === 1 ? "" : "s");
-
-  tbody.innerHTML = "";
-
-  if (files.length === 0) {
-    empty.classList.remove("d-none");
-    return;
-  }
-  empty.classList.add("d-none");
-
-  for (const f of files) {
-    const url = "/files/" + encodeURIComponent(f.name);
-
-    const tr = document.createElement("tr");
-
-    const tdIcon = document.createElement("td");
-    tdIcon.className = "fileicon";
-    tdIcon.textContent = iconFor(f.name);
-    tr.appendChild(tdIcon);
-
-    const tdName = document.createElement("td");
-    const a = document.createElement("a");
-    a.className = "fname text-decoration-none";
-    a.href = url;
-    a.title = f.name;
-    a.textContent = f.name;
-    tdName.appendChild(a);
-    tr.appendChild(tdName);
-
-    const tdSize = document.createElement("td");
-    tdSize.className = "text-secondary";
-    tdSize.textContent = formatSize(f.size);
-    tr.appendChild(tdSize);
-
-    const tdDate = document.createElement("td");
-    tdDate.className = "text-secondary";
-    tdDate.textContent = fmtDate(f.mtime);
-    tr.appendChild(tdDate);
-
-    const tdAct = document.createElement("td");
-    tdAct.className = "col-actions";
-
-    const dl = document.createElement("a");
-    dl.className = "btn btn-sm btn-outline-info";
-    dl.href = url;
-    dl.dataset.dl = f.name;
-    dl.dataset.size = f.size;
-    dl.textContent = "Download";
-    tdAct.appendChild(dl);
-
-    const del = document.createElement("button");
-    del.className = "btn btn-sm btn-outline-danger";
-    del.dataset.del = f.name;
-    del.textContent = "Delete";
-    tdAct.appendChild(del);
-
-    tr.appendChild(tdAct);
-    tbody.appendChild(tr);
-  }
+function segments(path) {
+  return (path || "").split("/").filter(Boolean);
 }
 
-/* ---------- views / sidebar ---------- */
+function joinPath(...parts) {
+  return parts.filter(Boolean).join("/");
+}
 
-const viewTransfer = document.getElementById("view-transfer");
-const viewDrives = document.getElementById("view-drives");
+function fileUrl(relPath) {
+  const parts = [current.root, ...segments(current.path), ...segments(relPath)];
+  return "/files/" + parts.map(encodeURIComponent).join("/");
+}
 
-document.querySelectorAll(".side-item").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".side-item").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    const view = btn.dataset.view;
-    viewTransfer.hidden = view !== "transfer";
-    viewDrives.hidden = view !== "drives";
-    if (view === "drives") loadShares();
-    if (view === "transfer") loadFiles();
-  });
-});
+function zipUrl(name) {
+  const parts = [current.root, ...segments(current.path), ...segments(name)];
+  return "/zip/" + parts.map(encodeURIComponent).join("/");
+}
+
+function deleteUrl(relPath) {
+  const parts = [current.root, ...segments(current.path), ...segments(relPath)];
+  return "/files/" + parts.map(encodeURIComponent).join("/") + "/delete";
+}
+
+function listQuery() {
+  return "root=" + encodeURIComponent(current.root) +
+    "&path=" + encodeURIComponent(current.path);
+}
+
+/* ---------- views ---------- */
+
+function showView(name) {
+  document.querySelectorAll(".side-item").forEach((b) =>
+    b.classList.toggle("active", b.dataset.view === name)
+  );
+  viewFiles.hidden = name !== "files";
+  viewDrives.hidden = name !== "drives";
+  if (name === "drives") loadDrives();
+}
+
+document.querySelectorAll(".side-item").forEach((btn) =>
+  btn.addEventListener("click", () => showView(btn.dataset.view))
+);
 
 /* ---------- drives ---------- */
 
-async function loadShares() {
+async function loadDrives() {
   const list = document.getElementById("drivesList");
   let res;
   try {
-    res = await fetch("/api/shares");
+    res = await fetch("/api/drives");
   } catch (e) {
     list.innerHTML = '<div class="text-danger text-center py-3 small">Could not reach server.</div>';
     return;
@@ -180,50 +133,50 @@ async function loadShares() {
     location.href = "/";
     return;
   }
-  const shares = await res.json();
-  if (!Array.isArray(shares)) return;
+  const drives = await res.json();
+  if (!Array.isArray(drives)) return;
 
   list.innerHTML = "";
-  if (shares.length === 0) {
-    list.innerHTML = '<div class="text-secondary text-center py-3 small">No shares configured.</div>';
+  if (drives.length === 0) {
+    list.innerHTML = '<div class="text-secondary text-center py-3 small">No drives found.</div>';
     return;
   }
 
-  for (const s of shares) {
+  for (const d of drives) {
     const card = document.createElement("div");
     card.className = "drive-card";
 
     const ico = document.createElement("span");
     ico.className = "drive-ico";
-    ico.textContent = "💾";
+    ico.textContent = d.type === "drive" ? "💾" : "📂";
 
     const body = document.createElement("div");
     body.style.minWidth = "0";
     const name = document.createElement("div");
     name.className = "drive-name";
-    name.textContent = s.name + (s.selected ? " (active)" : "");
+    name.textContent = d.name + (d.writable ? "" : " (read-only)");
     const path = document.createElement("div");
     path.className = "drive-path";
-    path.textContent = s.path;
+    path.textContent = d.path;
     body.append(name, path);
 
     card.append(ico, body);
 
-    if (s.selected) {
-      const chip = document.createElement("span");
-      chip.className = "badge text-bg-success drive-status";
-      chip.textContent = "Active";
-      card.append(chip);
-    } else if (!s.online) {
+    if (!d.online) {
       const chip = document.createElement("span");
       chip.className = "badge text-bg-secondary drive-status";
       chip.textContent = "Offline";
       card.append(chip);
     } else {
+      const chip = document.createElement("span");
+      chip.className = "badge text-bg-" + (d.writable ? "success" : "warning") + " drive-status";
+      chip.textContent = d.writable ? "Online" : "Read-only";
+      card.append(chip);
+
       const btn = document.createElement("button");
       btn.className = "btn btn-sm btn-outline-info";
-      btn.textContent = "Switch";
-      btn.addEventListener("click", () => switchShare(s.id));
+      btn.textContent = "Open";
+      btn.addEventListener("click", () => openDrive(d));
       card.append(btn);
     }
 
@@ -231,27 +184,196 @@ async function loadShares() {
   }
 }
 
-async function switchShare(id) {
-  const res = await fetch("/api/share", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id }),
+function openDrive(d) {
+  current.root = d.id;
+  current.rootName = d.name;
+  current.path = "";
+  writable = d.writable;
+  showView("files");
+  loadListing();
+}
+
+/* ---------- listing ---------- */
+
+function renderBreadcrumb(name, driveName) {
+  breadcrumb.innerHTML = "";
+
+  const rootCrumb = document.createElement("span");
+  rootCrumb.className = "crumb";
+  rootCrumb.textContent = driveName;
+  rootCrumb.addEventListener("click", (e) => {
+    e.stopPropagation();
+    current.path = "";
+    writable = true;
+    loadListing();
   });
+  breadcrumb.appendChild(rootCrumb);
+
+  let acc = "";
+  for (const seg of segments(current.path)) {
+    acc = joinPath(acc, seg);
+    const sep = document.createElement("span");
+    sep.className = "crumb-sep";
+    sep.textContent = "/";
+    breadcrumb.appendChild(sep);
+    const c = document.createElement("span");
+    c.className = "crumb";
+    c.textContent = seg;
+    c.title = seg;
+    c.addEventListener("click", (e) => {
+      e.stopPropagation();
+      current.path = acc;
+      writable = true;
+      loadListing();
+    });
+    breadcrumb.appendChild(c);
+  }
+}
+
+async function loadListing() {
+  if (appView.hidden || !current.root) return;
+  let res;
+  try {
+    res = await fetch("/api/list?" + listQuery());
+  } catch (e) {
+    return;
+  }
   if (res.status === 401) {
     location.href = "/";
     return;
   }
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    alert("Switch failed: " + (data.error || res.status));
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
     return;
   }
-  const shares = await (await fetch("/api/shares")).json();
-  const sel = shares.find((s) => s.selected);
-  if (sel) shareNameChip.textContent = sel.name;
-  loadShares();
-  document.querySelector('.side-item[data-view="transfer"]').click();
+  if (!res.ok || !data || Array.isArray(data)) {
+    tbody.innerHTML = "";
+    empty.classList.remove("d-none");
+    empty.textContent = (data && data.error) || "Something went wrong.";
+    return;
+  }
+
+  writable = data.writable;
+  renderBreadcrumb(data.path, current.rootName);
+
+  document.getElementById("fileCount").textContent =
+    data.dirs.length + " folder" + (data.dirs.length === 1 ? "" : "s") + ", " +
+    data.files.length + " file" + (data.files.length === 1 ? "" : "s");
+
+  dropzoneLabel.textContent = "Send to " +
+    (current.rootName + "/" + current.path).replace(/\/+$/, "");
+
+  tbody.innerHTML = "";
+
+  const all = [
+    ...data.dirs.map((d) => ({ dir: true, ...d })),
+    ...data.files.map((f) => ({ dir: false, ...f })),
+  ];
+
+  if (all.length === 0) {
+    empty.textContent = "This folder is empty.";
+    empty.classList.remove("d-none");
+    return;
+  }
+  empty.classList.add("d-none");
+
+  for (const item of all) {
+    const rel = joinPath(current.path, item.name);
+    const tr = document.createElement("tr");
+    if (item.dir) tr.className = "folder-row";
+
+    const tdIcon = document.createElement("td");
+    tdIcon.className = "fileicon";
+    tdIcon.textContent = item.dir
+      ? (item.locked ? "🔒" : "📁")
+      : iconFor(item.name);
+    tr.appendChild(tdIcon);
+
+    const tdName = document.createElement("td");
+    const nameEl = document.createElement("span");
+    nameEl.className = "fname";
+    nameEl.textContent = item.name;
+    nameEl.title = item.name;
+    tdName.appendChild(nameEl);
+    tr.appendChild(tdName);
+
+    const tdSize = document.createElement("td");
+    tdSize.className = "text-secondary";
+    tdSize.textContent = item.dir ? "" : formatSize(item.size);
+    tr.appendChild(tdSize);
+
+    const tdDate = document.createElement("td");
+    tdDate.className = "text-secondary";
+    tdDate.textContent = fmtDate(item.mtime);
+    if (item.locked) tdDate.textContent = "locked";
+    tr.appendChild(tdDate);
+
+    const tdAct = document.createElement("td");
+    tdAct.className = "col-actions";
+
+    if (item.dir) {
+      if (!item.locked) {
+        const zipBtn = document.createElement("button");
+        zipBtn.className = "btn btn-sm btn-outline-secondary";
+        zipBtn.dataset.zip = rel;
+        zipBtn.textContent = "ZIP";
+        tdAct.appendChild(zipBtn);
+      }
+    } else {
+      const dl = document.createElement("a");
+      dl.className = "btn btn-sm btn-outline-info";
+      dl.href = fileUrl(item.name);
+      dl.dataset.dl = {};
+      dl.dataset.name = rel;
+      dl.dataset.size = item.size;
+      dl.textContent = "Download";
+      tdAct.appendChild(dl);
+
+      const del = document.createElement("button");
+      del.className = "btn btn-sm btn-outline-danger";
+      del.dataset.del = rel;
+      del.textContent = "Delete";
+      tdAct.appendChild(del);
+    }
+
+    tr.appendChild(tdAct);
+
+    if (item.dir && !item.locked) {
+      tr.addEventListener("dblclick", () => openFolder(item.name));
+    }
+    tbody.appendChild(tr);
+  }
 }
+
+/* ---------- navigation ---------- */
+
+function openFolder(name) {
+  current.path = joinPath(current.path, name);
+  loadListing();
+}
+
+function goUp() {
+  if (!current.path) {
+    showView("drives");
+    return;
+  }
+  const segs = segments(current.path);
+  segs.pop();
+  current.path = segs.join("/");
+  loadListing();
+}
+
+upBtn.addEventListener("click", goUp);
+
+tbody.addEventListener("click", (e) => {
+  const row = e.target.closest("tr.folder-row");
+  if (row && !e.target.closest("button,a")) {
+    const name = row.querySelector(".fname").textContent;
+    openFolder(name);
+  }
+});
 
 /* ---------- transfer history ---------- */
 
@@ -297,7 +419,7 @@ function addTransferRow(name, size) {
 
   const status = document.createElement("span");
   status.className = "badge text-bg-secondary";
-  status.textContent = "Uploading";
+  status.textContent = "Transferring";
 
   const rate = document.createElement("span");
   rate.className = "t-rate";
@@ -335,6 +457,7 @@ function onTransferProgress(u, e) {
 /* ---------- uploads with XHR progress ---------- */
 
 function uploadFiles(files) {
+  if (!current.root) return;
   for (const file of files) {
     inFlight++;
     const u = addTransferRow(file.name, file.size);
@@ -359,30 +482,29 @@ function uploadFiles(files) {
         } catch (e) {}
         setStatus(u, msg, "danger");
       }
-      if (inFlight === 0) setTimeout(loadFiles, 500);
+      if (inFlight === 0) setTimeout(loadListing, 500);
     };
 
     xhr.onerror = () => {
       inFlight--;
       setStatus(u, "Failed", "danger");
-      if (inFlight === 0) setTimeout(loadFiles, 500);
+      if (inFlight === 0) setTimeout(loadListing, 500);
     };
 
-    xhr.open("POST", "/upload");
+    const q = listQuery();
+    xhr.open("POST", "/upload?" + q);
     xhr.send(fd);
   }
 }
 
-/* ---------- downloads with XHR progress ---------- */
+/* ---------- downloads ---------- */
 
 const BLOB_LIMIT = 300 * 1024 * 1024;
 
-function downloadFile(name, size) {
-  const url = "/files/" + encodeURIComponent(name);
-
+function downloadFile(name, rel, size) {
   if (size > BLOB_LIMIT) {
     addHistoryRow(name, "large file - native download", "warning");
-    location.href = url;
+    location.href = fileUrl(name);
     return;
   }
 
@@ -391,7 +513,7 @@ function downloadFile(name, size) {
   u.status.textContent = "Downloading";
 
   const xhr = new XMLHttpRequest();
-  xhr.open("GET", url);
+  xhr.open("GET", fileUrl(name));
   xhr.responseType = "blob";
   xhr.onprogress = (e) => onTransferProgress(u, e);
   xhr.onload = () => {
@@ -417,7 +539,12 @@ function downloadFile(name, size) {
   xhr.send();
 }
 
-/* ---------- dropzone: drag & drop + click to pick ---------- */
+function downloadZip(name, rel) {
+  addHistoryRow(name, "zipping + downloading", "info");
+  location.href = zipUrl(name);
+}
+
+/* ---------- dropzone ---------- */
 
 ["dragenter", "dragover", "dragleave", "drop"].forEach((ev) =>
   document.body.addEventListener(ev, (e) => e.preventDefault())
@@ -441,24 +568,37 @@ fileInput.addEventListener("change", () => {
   fileInput.value = "";
 });
 
-/* ---------- table actions: download + delete ---------- */
+/* ---------- table actions ---------- */
 
 tbody.addEventListener("click", async (e) => {
+  const zipBtn = e.target.closest("[data-zip]");
+  if (zipBtn) {
+    const rel = zipBtn.dataset.zip;
+    const name = rel.split("/").pop();
+    downloadZip(name, rel);
+    return;
+  }
+
   const dl = e.target.closest("[data-dl]");
   if (dl) {
     e.preventDefault();
-    downloadFile(dl.dataset.dl, Number(dl.dataset.size) || 0);
+    const name = dl.dataset.name.split("/").pop();
+    downloadFile(name, dl.dataset.name, Number(dl.dataset.size) || 0);
     return;
   }
+
   const del = e.target.closest("[data-del]");
   if (del) {
-    const name = del.dataset.del;
+    const rel = del.dataset.del;
+    const name = rel.split("/").pop();
+    if (!writable) {
+      alert("This share is read-only.");
+      return;
+    }
     if (!confirm(`Delete "${name}"?`)) return;
     del.disabled = true;
     try {
-      const res = await fetch("/files/" + encodeURIComponent(name) + "/delete", {
-        method: "POST",
-      });
+      const res = await fetch(deleteUrl(name), { method: "POST" });
       if (res.status === 401) {
         location.href = "/";
         return;
@@ -466,7 +606,7 @@ tbody.addEventListener("click", async (e) => {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         addHistoryRow(name, "deleted", "danger");
-        if (!appView.hidden) loadFiles();
+        if (!appView.hidden) loadListing();
       } else {
         alert("Delete failed: " + (data.error || res.status));
       }
@@ -483,7 +623,7 @@ clearTransfers.addEventListener("click", () => {
   showTransferEmpty();
 });
 
-/* ---------- PWA: install + service worker ---------- */
+/* ---------- PWA ---------- */
 
 let deferredInstall = null;
 
@@ -509,4 +649,6 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
 
-if (!appView.hidden) loadFiles();
+if (!appView.hidden) {
+  showView("drives");
+}

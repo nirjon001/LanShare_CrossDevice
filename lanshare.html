@@ -43,19 +43,13 @@
       <span class="fw-bold">LAN Share</span>
     </div>
     <nav class="side-nav">
-      <button class="side-item active" data-view="transfer">
-        &#128194; <span>File Transfer</span>
+      <button class="side-item active" data-view="files">
+        &#128194; <span>Files</span>
       </button>
       <button class="side-item" data-view="drives">
         &#128190; <span>Drives</span>
       </button>
     </nav>
-    <div class="side-foot">
-      <div class="side-chip" title="Current share">
-        <span class="chip-label">Share</span>
-        <span id="shareNameChip">{{share_name}}</span>
-      </div>
-    </div>
   </aside>
 
   <div class="app-main">
@@ -74,19 +68,21 @@
 
     <main class="container py-4">
 
-      <section id="view-transfer">
+      <section id="view-files">
+        <div class="crumbbar d-flex align-items-center gap-2 mb-3">
+          <button id="upBtn" class="btn btn-sm btn-outline-secondary" title="Up one level">&#8593;</button>
+          <div id="breadcrumb" class="breadcrumb-wrap"></div>
+        </div>
+
         <div id="dropzone" class="dropzone card" role="button" tabindex="0">
           <div class="card-body text-center py-4">
             <div class="dz-icon">&#128194;</div>
-            <p class="dz-text mb-0">Drag files here or click to send to this computer</p>
+            <p class="dz-text mb-0" id="dropzoneLabel">Drag files here or click to send</p>
           </div>
           <input type="file" id="fileInput" multiple hidden>
         </div>
 
         <section class="mt-4">
-          <h2 class="fs-6 fw-semibold text-body-secondary text-uppercase mb-2">
-            Files ({{count}})
-          </h2>
           <div class="table-responsive">
             <table class="table table-hover align-middle filetable mb-0">
               <thead>
@@ -102,7 +98,7 @@
             </table>
           </div>
           <div id="emptyState" class="empty text-secondary text-center d-none">
-            No files on this share yet.
+            This folder is empty.
           </div>
         </section>
 
@@ -122,13 +118,13 @@
       </section>
 
       <section id="view-drives" hidden>
-        <h2 class="fs-6 fw-semibold text-body-secondary text-uppercase mb-3">Mounted drives</h2>
+        <h2 class="fs-6 fw-semibold text-body-secondary text-uppercase mb-3">Drives & shares</h2>
         <div id="drivesList" class="drives-list">
           <div class="text-secondary text-center py-3 small">Loading...</div>
         </div>
         <p class="text-secondary small mt-3">
-          Add more paths in <code>shares.json</code> next to the server. Files are served straight
-          from the chosen folder — nothing is copied.
+          Add more paths in <code>shares.json</code>. Set <code>"writable": false</code> to make a
+          share read-only. Files are served from their real location — nothing is copied.
         </p>
       </section>
 
