@@ -29,6 +29,7 @@ self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
   if (url.pathname.startsWith("/api/")) return;
   if (url.pathname.startsWith("/files/")) return;
+  if (url.pathname.startsWith("/peer/")) return;
   if (url.pathname === "/upload") return;
 
   e.respondWith(

@@ -378,6 +378,10 @@ body {
   background: rgba(56, 189, 248, 0.08);
 }
 
+.peer-chip {
+  white-space: nowrap;
+}
+
 /* phones: sidebar becomes bottom tab bar */
 @media (max-width: 767px) {
   .app-shell {

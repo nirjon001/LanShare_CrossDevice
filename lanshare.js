@@ -71,6 +71,11 @@ let drivesCache = null;
 let searchTimer = null;
 let searchSeq = 0;
 let bagCache = [];
+let peerState = null;
+
+function peerPrefix() {
+  return peerState ? "/peer/" + encodeURIComponent(peerState.id) : "";
+}
 
 function getTransferEmpty() {
   return document.getElementById("transferEmpty");
@@ -103,7 +108,7 @@ function joinPath(...parts) {
 
 function fileUrl(relPath) {
   const parts = [current.root, ...segments(current.path), ...segments(relPath)];
-  return "/files/" + parts.map(encodeURIComponent).join("/");
+  return peerPrefix() + "/files/" + parts.map(encodeURIComponent).join("/");
 }
 
 function encParts(parts) {
@@ -112,7 +117,7 @@ function encParts(parts) {
 
 function deleteUrl(relPath) {
   const parts = [current.root, ...segments(current.path), ...segments(relPath)];
-  return "/files/" + encParts(parts) + "/delete";
+  return peerPrefix() + "/files/" + encParts(parts) + "/delete";
 }
 
 function listQuery() {
@@ -139,9 +144,10 @@ document.querySelectorAll(".side-item").forEach((btn) =>
 
 async function loadDrives() {
   const list = document.getElementById("drivesList");
+  loadPeers();
   let res;
   try {
-    res = await fetch("/api/drives");
+    res = await fetch(peerPrefix() + "/api/drives");
   } catch (e) {
     list.innerHTML = '<div class="text-danger text-center py-3 small">Could not reach server.</div>';
     return;
@@ -234,6 +240,55 @@ function openDrive(d) {
   loadListing();
 }
 
+async function loadPeers() {
+  const bar = document.getElementById("peerBar");
+  if (!bar) return;
+  let res;
+  try {
+    res = await fetch("/api/peers");
+  } catch (e) {
+    return;
+  }
+  if (res.status === 401) {
+    location.href = "/";
+    return;
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    return;
+  }
+  const devices = (data && Array.isArray(data.devices)) ? data.devices : [];
+  const chips = [];
+  const me = document.createElement("button");
+  me.className = "btn btn-sm peer-chip" + (peerState ? " btn-outline-secondary" : " btn-info");
+  me.textContent = "This device";
+  me.addEventListener("click", () => {
+    if (peerState) {
+      peerState = null;
+      loadDrives();
+    }
+  });
+  chips.push(me);
+  for (const d of devices) {
+    const b = document.createElement("button");
+    const active = peerState && peerState.id === d.id;
+    b.className = "btn btn-sm peer-chip" + (active ? " btn-info" : " btn-outline-secondary");
+    b.textContent = (d.online ? "● " : "○ ") + d.name;
+    b.title = d.url;
+    b.addEventListener("click", () => {
+      if (!active) {
+        peerState = { id: d.id, name: d.name };
+        loadDrives();
+      }
+    });
+    chips.push(b);
+  }
+  bar.innerHTML = "";
+  for (const c of chips) bar.appendChild(c);
+}
+
 /* ---------- listing ---------- */
 
 function renderBreadcrumb(name, driveName) {
@@ -278,7 +333,7 @@ async function loadListing() {
   searchInput.placeholder = "Search " + (current.rootName || current.root) + "…";
   let res;
   try {
-    res = await fetch("/api/list?" + listQuery());
+    res = await fetch(peerPrefix() + "/api/list?" + listQuery());
   } catch (e) {
     return;
   }
@@ -364,6 +419,20 @@ async function loadListing() {
         zipBtn.dataset.zip = rel;
         zipBtn.textContent = "ZIP";
         tdAct.appendChild(zipBtn);
+
+        const zipBag = document.createElement("button");
+        zipBag.className = "btn btn-sm btn-outline-secondary";
+        zipBag.dataset.zipbag = rel;
+        zipBag.title = "Zip this folder and stash the zip in the Bag";
+        zipBag.textContent = "💼ZIP";
+        tdAct.appendChild(zipBag);
+
+        const stashF = document.createElement("button");
+        stashF.className = "btn btn-sm btn-outline-warning";
+        stashF.dataset.stash = rel;
+        stashF.title = "Stash this folder in the Bag (zero-copy pointer)";
+        stashF.textContent = "💼";
+        tdAct.appendChild(stashF);
       }
     } else {
       const dl = document.createElement("a");
@@ -563,7 +632,7 @@ function uploadFiles(files, rootId = current.root, path = current.path) {
     };
 
     const q = "root=" + encodeURIComponent(rootId) + "&path=" + encodeURIComponent(path);
-    xhr.open("POST", "/upload?" + q);
+    xhr.open("POST", peerPrefix() + "/upload?" + q);
     xhr.send(fd);
   }
 }
@@ -612,14 +681,18 @@ function downloadFile(name, rel, size) {
 
 /* ---------- zip folders: background job + progress ---------- */
 
-function downloadZip(name) {
+function zipFolder(name, mode) {
   if (!current.root) return;
   const u = addTransferRow(name + ".zip", null);
+  if (mode === "bag") {
+    u.status.textContent = "Bagging";
+    u.status.className = "badge text-bg-warning";
+  }
   u.bar.style.width = "2%";
   u.pct.textContent = "";
 
   const parts = [current.root, ...segments(current.path), ...segments(name)];
-  fetch("/zip/" + encParts(parts) + "/start", { method: "POST" })
+  fetch(peerPrefix() + "/zip/" + encParts(parts) + "/start", { method: "POST" })
     .then((r) => r.json())
     .then((j) => {
       if (!j.ok) {
@@ -628,9 +701,9 @@ function downloadZip(name) {
       }
       const jobId = j.job_id;
       const iv = setInterval(() => {
-        fetch("/zip/status/" + encodeURIComponent(jobId))
+        fetch(peerPrefix() + "/zip/status/" + encodeURIComponent(jobId))
           .then((r) => r.json())
-          .then((st) => {
+          .then(async (st) => {
             if (!st.ok || st.state === "error") {
               clearInterval(iv);
               setStatus(u, (st && st.error) || "Failed", "danger");
@@ -639,13 +712,46 @@ function downloadZip(name) {
             updateZipBar(u, st);
             if (st.state === "done") {
               clearInterval(iv);
-              transferZip(jobId, st.name, u);
+              if (mode === "bag") {
+                await stashZipFromJob(jobId, u);
+              } else {
+                transferZip(jobId, st.name, u);
+              }
             }
           })
           .catch(() => {});
       }, 400);
     })
     .catch(() => setStatus(u, "Failed", "danger"));
+}
+
+async function stashZipFromJob(jobId, u) {
+  let res;
+  try {
+    res = await fetch(peerPrefix() + "/api/bag/add-zip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: jobId }),
+    });
+  } catch (e) {
+    setStatus(u, "Failed", "danger");
+    return;
+  }
+  if (res.status === 401) {
+    location.href = "/";
+    return;
+  }
+  const d = await res.json().catch(() => ({}));
+  if (res.ok && d.ok) {
+    u.status.className = "badge text-bg-success";
+    u.status.textContent = "In Bag";
+    u.bar.classList.remove("progress-bar-animated", "progress-bar-striped");
+    u.bar.style.width = "100%";
+    u.pct.textContent = "100%";
+    refreshBag();
+  } else {
+    setStatus(u, (d && d.error) || "Failed", "danger");
+  }
 }
 
 function updateZipBar(u, st) {
@@ -669,7 +775,7 @@ function updateZipBar(u, st) {
 function transferZip(jobId, zipName, u) {
   u.status.textContent = "Downloading";
   const xhr = new XMLHttpRequest();
-  xhr.open("GET", "/zip/download/" + encodeURIComponent(jobId));
+  xhr.open("GET", peerPrefix() + "/zip/download/" + encodeURIComponent(jobId));
   xhr.responseType = "blob";
   xhr.onprogress = (e) => {
     if (!e.lengthComputable) return;
@@ -739,7 +845,15 @@ tbody.addEventListener("click", async (e) => {
   if (zipBtn) {
     const rel = zipBtn.dataset.zip;
     const name = rel.split("/").pop();
-    downloadZip(name);
+    zipFolder(name, "download");
+    return;
+  }
+
+  const zipBag = e.target.closest("[data-zipbag]");
+  if (zipBag) {
+    const rel = zipBag.dataset.zipbag;
+    const name = rel.split("/").pop();
+    zipFolder(name, "bag");
     return;
   }
 
@@ -822,7 +936,7 @@ async function runSearch(q) {
   const mySeq = ++searchSeq;
   let res;
   try {
-    res = await fetch("/api/search?root=" + encodeURIComponent(current.root) +
+    res = await fetch(peerPrefix() + "/api/search?root=" + encodeURIComponent(current.root) +
       "&path=" + encodeURIComponent(current.path) + "&q=" + encodeURIComponent(q));
   } catch (e) {
     return;
@@ -1004,7 +1118,7 @@ async function handleStash(rel) {
   u.status.className = "badge text-bg-warning";
   u.status.textContent = "Stashing";
   try {
-    const res = await fetch("/api/bag/add", {
+    const res = await fetch(peerPrefix() + "/api/bag/add", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ share: current.root, path: rel }),
@@ -1051,7 +1165,7 @@ bagPanel.addEventListener("drop", (e) => {
 async function refreshBag() {
   let res;
   try {
-    res = await fetch("/api/bag");
+    res = await fetch(peerPrefix() + "/api/bag");
   } catch (e) {
     return;
   }
@@ -1082,7 +1196,8 @@ function renderBagRows() {
     row.dataset.id = item.id;
 
     const ico = document.createElement("span");
-    ico.textContent = "📄";
+    const kind = item.kind || "file";
+    ico.textContent = kind === "dir" ? "📁" : kind === "zip" ? "🗜️" : "📄";
 
     const nm = document.createElement("span");
     nm.className = "t-name";
@@ -1135,7 +1250,7 @@ function renderBagRows() {
 
 async function bagRemove(ids) {
   try {
-    const res = await fetch("/api/bag/remove", {
+    const res = await fetch(peerPrefix() + "/api/bag/remove", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
@@ -1157,7 +1272,7 @@ async function pullBag(ids, mode, destRoot, destPath) {
   if (!destRoot) return null;
   let res;
   try {
-    res = await fetch("/api/bag/pull", {
+    res = await fetch(peerPrefix() + "/api/bag/pull", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids, mode, dest_root: destRoot, dest_path: destPath }),

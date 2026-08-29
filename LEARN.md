@@ -9,7 +9,7 @@ Each section is ONE idea. For every idea there is:
   the name.
 - **Do it yourself** — a 2-5 minute task. Do these until the answer comes without thinking.
 
-The whole app = ~49 ideas. One page a day = a month to real ownership.
+The whole app = ~56 ideas. One page a day = a month to real ownership.
 
 ## The 20-minute rule
 
@@ -379,6 +379,77 @@ Never move to the next section with an unchecked gap — gaps compound.
 
 ---
 
+## Group K — multi-device (M3)
+
+> Same PIN on every device. Every device serves its own web app; one of them can act as a **hub** that
+> keeps a registry of the others and **proxies** reads/writes to them through `/peer/{id}/...`. No mDNS,
+> no UDP broadcast — a device that knows the hub's URL simply registers itself over HTTP.
+
+### 50. Device identity
+- **What it is**: each install needs a stable id so the hub can address it. Ids come from
+  `LANSHARE_DEVICE_ID` (env), else a persisted random hex from `device.id`. The same env also names
+  the device (`LANSHARE_DEVICE_NAME`) and picks its port (`LANSHARE_PORT`, default 8000).
+- **Find it**: `lanShare.py → get_device_id()`, `DEVICE_ID`, `PORT`, `DEVICE_NAME`
+- **Do it**: run two copies on different ports with `LANSHARE_DEVICE_ID` set and watch each print its own id.
+
+### 51. The shared machine token
+- **What it is**: devices authenticate to each other with one shared secret — `LANSHARE_TOKEN` or a
+  hash of the PIN. `is_authed()` now accepts it as an `X-LANSHARE-TOKEN` header OR a signed session
+  cookie, so the hub can present the token on a peer's behalf while browsers keep logging in with the
+  PIN. `peer_token_ok()` is the stricter check on the registry routes.
+- **Find it**: `lanShare.py → TOKEN`, `is_authed()`, `peer_token_ok()` (`secrets.compare_digest`)
+- **Do it**: `curl -H "X-LANSHARE-TOKEN: ..." http://host/api/list?root=...` — no login needed.
+
+### 52. Peer registry
+- **What it is**: the hub stores devices in `devices.json` (`id`, `name`, `url`, `last_seen`).
+  `/api/device/register` upserts a device (validated id/url), `/api/device/heartbeat` refreshes
+  `last_seen`, and `/api/peers` lists everyone with an `online` flag = seen in the last 60 s.
+- **Find it**: `lanShare.py → _load_peers/_save_peers/find_peer`, `device_register()`,
+  `device_heartbeat()`, `api_peers()`; the file `devices.json`
+- **Do it**: register a fake device by hand with curl, then check `/api/peers` shows it — wait 60 s and
+  it flips to offline.
+
+### 53. The reverse proxy (`/peer/{id}/{path}`)
+- **What it is**: one generic route forwards any request to a peer and streams the answer back,
+  after passing its own auth check. It keeps only a safe list of headers, forwards the
+  `X-LANSHARE-TOKEN` (so the peer accepts it), streams the body (big downloads stay streaming), and
+  returns 502 when the peer is unreachable.
+- **Find it**: `lanShare.py → peer_proxy()` (`httpx` `client.send(..., stream=True)` + `StreamingResponse`
+  with `BackgroundTask(r.aclose)`)
+- **Bug to remember**: the first version wrapped the call in `async with client.stream(...)` and built
+  the response *after* the block — exiting the context closed the httpx stream, so every proxied body
+  aborted with `httpx.StreamClosed`. The response must keep the stream open until consumed.
+- **Do it**: browse a peer's folder, then `curl -o file http://hub/peer/<id>/files/...` to fetch a big file.
+
+### 54. The registration loop
+- **What it is**: when `LANSHARE_HUB_URL` is set, the device starts a daemon thread that POSTs
+  `/api/device/register` every 15 s with its id/name and `LANSHARE_ADVERTISE_URL` (or a LAN IP guess),
+  so the hub registry stays fresh automatically.
+- **Find it**: `lanShare.py → _peer_registration_loop()`, `main()`
+- **Do it**: start a hub and a node with the hub URL, watch the hub console print `device registered`.
+
+### 55. The peer switcher on the frontend
+- **What it is**: the Drives view shows a bar of device chips. Picking one sets `peerState`, and
+  `peerPrefix()` prepends `/peer/{id}` to every API call, file URL, zip endpoint, and bag call — so
+  browsing, searching, uploading, zipping, and stashing all happen on the *selected device* while the
+  UI stays identical.
+- **Find it**: `lanshare.js → loadPeers()`, `peerPrefix()`, `peerState`; `lanshare.html → #peerBar`;
+  the service worker skips `/peer/` (`sw.js`)
+- **Do it**: pick a peer chip, navigate it like a local drive, then stash one of its files in the bag.
+
+### 56. Folders and virtual zips in the Bag
+- **What it is**: the Bag entries gained a `kind` — `file`, `dir`, or `zip`. Folders store a pointer and
+  a `_dir_size` snapshot; pulling copies/moves the whole tree. "Zip → Bag" runs the zip job then moves
+  the finished temp archive into `.bag_stash/<job_id>.zip` as a durable entry (`kind: "zip"`) that is
+  deleted after one pull.
+- **Find it**: `lanShare.py → _dir_size()`, `bag_add()`, `bag_add_zip()`, `bag_pull()`; the
+  `destination inside the folder` guard (a folder may not be pulled into itself — `shutil.copytree`
+  would recurse forever); `lanshare.js → stashZipFromJob()`, the 💼 ZIP button
+- **Do it**: stash a folder, then try to pull it into one of its own subfolders — read the `failed`
+  reason the guard returns.
+
+---
+
 ## The interview rebuild drill
 
 Take `lanShare.py` (the server) and write it from an empty file in under 40 minutes with ONLY this checklist:
@@ -395,11 +466,15 @@ Take `lanShare.py` (the server) and write it from an empty file in under 40 minu
 10. `POST /files/{share}/{subpath:path}/delete`
 11. the `safe_rel` traversal guard used by every filesystem route
 12. the Bag: `GET /api/bag`, `POST /api/bag/add` · `/api/bag/remove` · `/api/bag/pull` · `/api/bag/clear`
-13. startup panel (rich) + QR + uvicorn
+    (+ `kind` file/dir/zip, `add-zip` stash, destination-inside-source guard)
+13. multi-device: device id + shared token, `register`/`heartbeat`/`peers`, the generic streaming
+    `/peer/{id}/{path}` proxy, and the registration loop
+14. startup panel (rich) + QR + uvicorn
 
 Then do the same for `lanshare.js`: `loadDrives`, `openDrive`, `loadListing` + breadcrumb render,
 folder navigation (state machine), live search (debounce + sequence guard), go-to-path (`findShareForPath`),
 zip job polling with a two-phase progress bar, XHR progress uploads, blob download + native fallback,
-the Bag (stash button, row drag via `BAG_MIME`, pull copy/move into the current folder), and the
+the Bag (stash button, row drag via `BAG_MIME`, pull copy/move into the current folder), the
+peer switcher (`loadPeers` + `peerPrefix` + `peerState`), and the
 401 guard. If a step stalls longer than 20 minutes, stop, look it up, and do it from memory the next
 day. Repeat weekly.

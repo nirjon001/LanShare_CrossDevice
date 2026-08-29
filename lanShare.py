@@ -1,8 +1,11 @@
 import sys
 import os
+import re
+import time
 import socket
 import secrets
 import json
+import hashlib
 import string
 import tempfile
 import zipfile
@@ -10,11 +13,12 @@ import shutil
 import threading
 from pathlib import Path
 from datetime import datetime
-import re
+import httpx
 import uvicorn
 import qrcode
 from fastapi import FastAPI, Request, UploadFile, File, Response
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import (FileResponse, HTMLResponse, RedirectResponse,
+                               JSONResponse, StreamingResponse)
 from starlette.background import BackgroundTask
 from rich.console import Console
 from rich.panel import Panel
@@ -22,16 +26,42 @@ from itsdangerous import URLSafeSerializer, BadSignature
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATE_FILE = BASE_DIR / "lanshare.html"
-CONFIG_FILE = BASE_DIR / "shares.json"
+CONFIG_FILE = Path(os.getenv("LANSHARE_SHARES") or BASE_DIR / "shares.json")
+DEVICES_FILE = BASE_DIR / "devices.json"
+DEVICE_ID_FILE = BASE_DIR / "device.id"
 ICON_DIR = BASE_DIR / "icons"
+BAG_STASH_DIR = BASE_DIR / ".bag_stash"
 
 PIN = os.getenv("LANSHARE_PIN") or f"{secrets.randbelow(10000):04d}"
 SESSION_COOKIE = "lan_share_auth"
 signer = URLSafeSerializer(secrets.token_hex(32))
 
+PORT = int(os.getenv("LANSHARE_PORT") or 8000)
+TOKEN = os.getenv("LANSHARE_TOKEN") or hashlib.sha256(f"lanshare:{PIN}".encode()).hexdigest()
+HUB_URL = (os.getenv("LANSHARE_HUB_URL") or "").rstrip("/")
+DEVICE_NAME = os.getenv("LANSHARE_DEVICE_NAME") or socket.gethostname().split(".")[0]
+ADVERTISE_URL = (os.getenv("LANSHARE_ADVERTISE_URL") or "").rstrip("/")
+PEER_TIMEOUT = 12.0
+
 SKIP_SEARCH = {"system volume information", "$recycle.bin", "windows.old"}
 ZIP_JOBS = {}
 BAG_FILE = BASE_DIR / "bag.json"
+
+
+def get_device_id():
+    override = (os.getenv("LANSHARE_DEVICE_ID") or "").strip()
+    if override and re.fullmatch(r"[A-Za-z0-9_-]+", override):
+        return override
+    if DEVICE_ID_FILE.is_file():
+        txt = DEVICE_ID_FILE.read_text().strip()
+        if txt:
+            return txt
+    did = secrets.token_hex(6)
+    DEVICE_ID_FILE.write_text(did)
+    return did
+
+
+DEVICE_ID = get_device_id()
 
 app = FastAPI()
 console = Console()
@@ -118,6 +148,9 @@ def share_by_id(sid):
 
 
 def is_authed(request):
+    hdr = request.headers.get("x-lanshare-token", "")
+    if hdr and secrets.compare_digest(hdr, TOKEN):
+        return True
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return False
@@ -330,6 +363,132 @@ class BagStore:
 BAG = BagStore()
 
 
+# ---- peer registry (hub role) ----
+
+PEER_LOCK = threading.Lock()
+
+
+def _load_peers():
+    try:
+        data = json.loads(DEVICES_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return []
+
+
+def _save_peers(peers):
+    DEVICES_FILE.write_text(json.dumps(peers, indent=2), encoding="utf-8")
+
+
+def find_peer(pid):
+    for p in _load_peers():
+        if p.get("id") == pid:
+            return p
+    return None
+
+
+def peer_token_ok(request):
+    got = request.headers.get("X-LANSHARE-TOKEN", "")
+    return bool(got) and secrets.compare_digest(got, TOKEN)
+
+
+@app.get("/api/peers")
+async def api_peers(request: Request):
+    if not is_authed(request):
+        return JSONResponse({"error": "auth"}, status_code=401)
+    now = time.time()
+    out = []
+    for e in _load_peers():
+        out.append({
+            "id": e.get("id"),
+            "name": e.get("name"),
+            "url": e.get("url"),
+            "online": now - e.get("last_seen", 0) < 60,
+        })
+    return {"ok": True, "devices": out}
+
+
+@app.post("/api/device/register")
+async def device_register(request: Request):
+    if not peer_token_ok(request):
+        return JSONResponse({"ok": False, "error": "bad token"}, status_code=403)
+    body = await request.json()
+    pid = (body.get("id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", pid):
+        return JSONResponse({"ok": False, "error": "bad device id"}, status_code=400)
+    url = (body.get("url") or "").strip()
+    if not url.startswith("http://") and not url.startswith("https://"):
+        return JSONResponse({"ok": False, "error": "bad url"}, status_code=400)
+    name = (body.get("name") or pid)[:40].strip()
+    with PEER_LOCK:
+        peers = _load_peers()
+        entry = {"id": pid, "name": name, "url": url, "last_seen": time.time()}
+        peers = [p for p in peers if p.get("id") != pid] + [entry]
+        _save_peers(peers)
+    console.print(f"[green]device registered[/green] [cyan]{name}[/cyan] ({url})")
+    return {"ok": True, "device": {"id": pid, "name": name, "url": url}}
+
+
+@app.post("/api/device/heartbeat")
+async def device_heartbeat(request: Request):
+    if not peer_token_ok(request):
+        return JSONResponse({"ok": False, "error": "bad token"}, status_code=403)
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    pid = (body.get("id") or "").strip()
+    if not pid:
+        return JSONResponse({"ok": False, "error": "bad device id"}, status_code=400)
+    with PEER_LOCK:
+        peers = _load_peers()
+        for p in peers:
+            if p.get("id") == pid:
+                p["last_seen"] = time.time()
+                _save_peers(peers)
+                return {"ok": True}
+        return JSONResponse({"ok": False, "error": "unknown device"}, status_code=404)
+
+
+@app.api_route("/peer/{pid}/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "DELETE"])
+async def peer_proxy(request: Request, pid: str, path: str = ""):
+    if not is_authed(request):
+        if request.method == "GET":
+            return RedirectResponse("/", status_code=307)
+        return JSONResponse({"error": "auth"}, status_code=401)
+    peer = find_peer(pid)
+    if peer is None:
+        return JSONResponse({"ok": False, "error": "no such peer"}, status_code=404)
+    target = f"{str(peer['url']).rstrip('/')}/{path}"
+    if request.url.query:
+        target += f"?{request.url.query}"
+    headers = {"X-LANSHARE-TOKEN": TOKEN}
+    ct = request.headers.get("content-type")
+    if ct:
+        headers["Content-Type"] = ct
+    try:
+        body = await request.body() if request.method in ("POST", "PUT", "PATCH", "DELETE") else None
+        client = httpx.AsyncClient(timeout=PEER_TIMEOUT, follow_redirects=False)
+        req = client.build_request(request.method, target, headers=headers, content=body)
+        r = await client.send(req, stream=True)
+        if request.method == "HEAD":
+            safe = {k: v for k, v in r.headers.items()
+                    if k.lower() in ("content-type", "content-length")}
+            await r.aclose()
+            return Response(status_code=r.status_code, headers=safe)
+        safe = {k: v for k, v in r.headers.items()
+                if k.lower() in ("content-type", "content-disposition",
+                                 "content-length", "content-range",
+                                 "accept-ranges", "etag", "last-modified")}
+        return StreamingResponse(r.aiter_bytes(), status_code=r.status_code,
+                                 headers=safe, background=BackgroundTask(r.aclose))
+    except httpx.RequestError:
+        return JSONResponse({"ok": False, "error": "peer unreachable"}, status_code=502)
+
+
 @app.get("/api/bag")
 async def bag_list(request: Request):
     if not is_authed(request):
@@ -338,17 +497,41 @@ async def bag_list(request: Request):
     for e in BAG.all():
         entry = dict(e)
         entry["missing"] = False
-        s = share_by_id(e["share"])
-        if s is None:
-            entry["missing"] = True
-        else:
-            base, target = safe_rel(s, e["path"])
-            if target is None or not target.is_file():
+        kind = e.get("kind", "file")
+        if kind == "zip":
+            src = Path(e["path"])
+            if not src.is_file():
                 entry["missing"] = True
             else:
-                entry["size"] = target.stat().st_size
+                entry["size"] = src.stat().st_size
+        else:
+            s = share_by_id(e["share"])
+            if s is None:
+                entry["missing"] = True
+            else:
+                base, target = safe_rel(s, e["path"])
+                good = target is not None and target.exists()
+                if kind == "dir" and good and not target.is_dir():
+                    good = False
+                if kind == "file" and good and not target.is_file():
+                    good = False
+                if not good:
+                    entry["missing"] = True
+                elif kind == "file":
+                    entry["size"] = target.stat().st_size
         out.append(entry)
     return {"ok": True, "items": out}
+
+
+def _dir_size(path):
+    total = 0
+    for root_dir, _, fnames in os.walk(path):
+        for fn in fnames:
+            try:
+                total += (Path(root_dir) / fn).stat().st_size
+            except OSError:
+                pass
+    return total
 
 
 @app.post("/api/bag/add")
@@ -362,21 +545,63 @@ async def bag_add(request: Request):
     base, target = safe_rel(s, body.get("path", ""))
     if target is None:
         return JSONResponse({"ok": False, "error": "outside share"}, status_code=403)
-    if not target.is_file():
-        return JSONResponse({"ok": False, "error": "not a file"}, status_code=404)
+    if not target.exists():
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    if target.is_dir():
+        kind, size = "dir", _dir_size(target)
+    elif target.is_file():
+        kind, size = "file", target.stat().st_size
+    else:
+        return JSONResponse({"ok": False, "error": "not a file or folder"}, status_code=404)
     entry = {
         "id": secrets.token_hex(6),
         "share": s["id"],
         "path": body["path"],
         "name": target.name,
-        "size": target.stat().st_size,
+        "kind": kind,
+        "size": size,
         "added": datetime.now().isoformat(timespec="seconds"),
     }
     for existing in BAG.all():
         if existing.get("share") == entry["share"] and existing.get("path") == entry["path"]:
             return {"ok": True, "already": True, "item": existing}
     BAG.add(**entry)
-    console.print(f"[cyan]bag +[/cyan] {entry['name']} ({entry['size']} B)")
+    console.print(f"[cyan]bag +[/cyan] {entry['kind']} {entry['name']} ({entry['size']} B)")
+    return {"ok": True, "item": entry}
+
+
+@app.post("/api/bag/add-zip")
+async def bag_add_zip(request: Request):
+    if not is_authed(request):
+        return JSONResponse({"error": "auth"}, status_code=401)
+    body = await request.json()
+    job_id = body.get("job_id", "")
+    job = ZIP_JOBS.get(job_id)
+    if job is None:
+        return JSONResponse({"ok": False, "error": "no such job"}, status_code=404)
+    if job["state"] != "done":
+        return JSONResponse({"ok": False, "error": "job not finished"}, status_code=400)
+    ZIP_JOBS.pop(job_id, None)
+    tmp = Path(job["path"])
+    if not tmp.is_file():
+        return JSONResponse({"ok": False, "error": "zip gone"}, status_code=500)
+    BAG_STASH_DIR.mkdir(exist_ok=True)
+    stash_file = BAG_STASH_DIR / f"{job_id}.zip"
+    try:
+        shutil.move(str(tmp), str(stash_file))
+    except OSError as ex:
+        return JSONResponse({"ok": False, "error": str(ex)}, status_code=500)
+    entry = {
+        "id": job_id,
+        "share": "_stash",
+        "path": str(stash_file),
+        "name": f"{job['name']}.zip",
+        "kind": "zip",
+        "size": stash_file.stat().st_size,
+        "added": datetime.now().isoformat(timespec="seconds"),
+    }
+    BAG.add(**entry)
+    console.print(f"[cyan]bag +[/cyan] zip {entry['name']}")
     return {"ok": True, "item": entry}
 
 
@@ -410,26 +635,56 @@ async def bag_pull(request: Request):
     for e in BAG.all():
         if e["id"] not in ids:
             continue
-        src_s = share_by_id(e["share"])
-        if src_s is None:
-            failed.append({"id": e["id"], "name": e.get("name", "?"), "error": "share gone"})
-            continue
-        sbase, src = safe_rel(src_s, e["path"])
-        if src is None or not src.is_file():
-            failed.append({"id": e["id"], "name": e.get("name", "?"), "error": "file missing"})
-            continue
-        dest_file = unique_path(dest, src.name)
+        kind = e.get("kind", "file")
+        name = e.get("name", "?")
+        dest_file = None
         try:
-            if mode == "move":
-                shutil.move(str(src), str(dest_file))
-            else:
+            if kind == "zip":
+                src = Path(e["path"])
+                if not src.is_file():
+                    failed.append({"id": e["id"], "name": name, "error": "file missing"})
+                    continue
+                dest_file = unique_path(dest, e.get("name") or src.name)
                 shutil.copy2(str(src), str(dest_file))
-        except OSError as ex:
-            failed.append({"id": e["id"], "name": src.name, "error": str(ex)})
+                try:
+                    os.unlink(src)
+                except OSError:
+                    pass
+                pulled_ids.append(e["id"])
+            else:
+                src_s = share_by_id(e["share"])
+                if src_s is None:
+                    failed.append({"id": e["id"], "name": name, "error": "share gone"})
+                    continue
+                sbase, src = safe_rel(src_s, e["path"])
+                if src is None or not src.exists():
+                    failed.append({"id": e["id"], "name": name, "error": "file missing"})
+                    continue
+                if kind == "dir" and not src.is_dir():
+                    failed.append({"id": e["id"], "name": name, "error": "not a folder"})
+                    continue
+                if kind == "file" and not src.is_file():
+                    failed.append({"id": e["id"], "name": name, "error": "not a file"})
+                    continue
+                dest_file = unique_path(dest, src.name)
+                if kind == "dir":
+                    sd, dd = str(src.resolve()), str(dest_file.resolve())
+                    if dd.startswith(sd + os.sep) or dd == sd:
+                        failed.append({"id": e["id"], "name": name,
+                                       "error": "destination inside the folder"})
+                        continue
+                if mode == "move":
+                    shutil.move(str(src), str(dest_file))
+                    pulled_ids.append(e["id"])
+                elif kind == "dir":
+                    shutil.copytree(src, dest_file)
+                else:
+                    shutil.copy2(str(src), str(dest_file))
+        except (OSError, shutil.Error) as ex:
+            failed.append({"id": e["id"], "name": name, "error": str(ex)})
             continue
         done.append({"id": e["id"], "name": dest_file.name, "size": dest_file.stat().st_size})
-        pulled_ids.append(e["id"])
-    if mode == "move":
+    if pulled_ids:
         BAG.remove(pulled_ids)
     console.print(f"[cyan]bag pull[/cyan] {mode}: {len(done)} ok, {len(failed)} failed")
     return {"ok": True, "done": done, "failed": failed}
@@ -697,8 +952,10 @@ def print_startup(url):
         f"[bold]LAN Share is running[/bold]\n\n"
         f"PIN: [bold yellow]{PIN}[/bold yellow]  (enter this on any device)\n\n"
         f"Open on any device on this WiFi:\n[bold cyan]{url}[/bold cyan] (or scan the QR)\n\n"
+        f"Device: [green]{DEVICE_NAME}[/green] ([cyan]{DEVICE_ID}[/cyan])\n"
         f"Detected drives: [green]{drive_line}[/green]\n"
         + (f"Extra shares: {', '.join(s['name'] for s in shares)}\n" if shares else "")
+        + (f"Hub: registering to [cyan]{HUB_URL}[/cyan]\n" if HUB_URL else "")
         + f"Edit [cyan]{CONFIG_FILE}[/cyan] to add more shares or set writable:false.\n"
         f"WARNING: any device with the PIN can read/write these drives.\n",
         title="[bold]LAN Share[/bold]",
@@ -708,11 +965,33 @@ def print_startup(url):
     print_qr(url)
 
 
+def _peer_registration_loop():
+    """When pointed at a hub via LANSHARE_HUB_URL, register and stay alive."""
+    payload = {
+        "id": DEVICE_ID,
+        "name": DEVICE_NAME,
+        "url": ADVERTISE_URL or f"http://{get_lan_ip()}:{PORT}",
+    }
+    while True:
+        try:
+            with httpx.Client(timeout=5) as c:
+                r = c.post(f"{HUB_URL}/api/device/register", json=payload,
+                           headers={"X-LANSHARE-TOKEN": TOKEN})
+                if r.status_code >= 300:
+                    console.print(f"[yellow]hub register {r.status_code}[/yellow]")
+        except Exception:
+            pass
+        time.sleep(15)
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
-    url = f"http://{get_lan_ip()}:8000"
+    url = f"http://{get_lan_ip()}:{PORT}"
     print_startup(url)
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    if HUB_URL:
+        threading.Thread(target=_peer_registration_loop, daemon=True).start()
+        console.print(f"[cyan]registering to hub[/cyan] {HUB_URL} as [green]{DEVICE_NAME}[/green]")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
 
 
 if __name__ == "__main__":
