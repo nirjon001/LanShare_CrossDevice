@@ -73,6 +73,8 @@ let searchTimer = null;
 let searchSeq = 0;
 let bagCache = [];
 let peerState = null;
+let recentTimer = null;
+let recentBusy = false;
 
 function peerPrefix() {
   return peerState ? "/peer/" + encodeURIComponent(peerState.id) : "";
@@ -135,6 +137,7 @@ function showView(name) {
   viewFiles.hidden = name !== "files";
   viewDrives.hidden = name !== "drives";
   viewRecent.hidden = name !== "recent";
+  if (name !== "recent") { window.clearInterval(recentTimer); recentTimer = null; }
   if (name === "drives") loadDrives();
   if (name === "recent") openRecent();
 }
@@ -538,20 +541,28 @@ upBtn.addEventListener("click", goUp);
 
 /* ---------- recent files ---------- */
 
-async function openRecent() {
-  const list = document.getElementById("recentRows");
-  const emptyEl = document.getElementById("recentEmpty");
-  const expiredEl = document.getElementById("recentExpired");
+function openRecent() {
   document.getElementById("recentDevice").textContent =
     peerState ? peerState.name : "this device";
-  list.innerHTML = '<tr><td colspan="4" class="text-secondary text-center py-3 small">Loading...</td></tr>';
-  emptyEl.hidden = true;
-  expiredEl.hidden = true;
+  document.getElementById("recentExpired").hidden = true;
+  document.getElementById("recentEmpty").hidden = true;
+  document.getElementById("recentRows").innerHTML =
+    '<tr><td colspan="4" class="text-secondary text-center py-3 small">Loading...</td></tr>';
+  window.clearInterval(recentTimer);
+  refreshRecent();
+  recentTimer = window.setInterval(refreshRecent, 5000);
+}
+
+async function refreshRecent() {
+  if (recentBusy) return;
+  recentBusy = true;
+  const list = document.getElementById("recentRows");
+  const emptyEl = document.getElementById("recentEmpty");
   let res;
   try {
     res = await fetch(peerPrefix() + "/api/recent");
   } catch (e) {
-    list.innerHTML = '<tr><td colspan="4" class="text-danger text-center py-3 small">Could not reach server.</td></tr>';
+    recentBusy = false;
     return;
   }
   if (res.status === 401) {
@@ -559,7 +570,8 @@ async function openRecent() {
     return;
   }
   let data;
-  try { data = await res.json(); } catch (e) { return; }
+  try { data = await res.json(); } catch (e) { recentBusy = false; return; }
+  recentBusy = false;
   const entries = (data && Array.isArray(data.entries)) ? data.entries : [];
   list.innerHTML = "";
   if (entries.length === 0) { emptyEl.hidden = false; return; }
