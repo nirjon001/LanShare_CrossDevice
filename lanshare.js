@@ -125,6 +125,7 @@ async function loadFiles() {
     dl.className = "btn btn-sm btn-outline-info";
     dl.href = url;
     dl.dataset.dl = f.name;
+    dl.dataset.size = f.size;
     dl.textContent = "Download";
     tdAct.appendChild(dl);
 
@@ -185,9 +186,13 @@ function addTransferRow(name, size) {
   status.className = "badge text-bg-secondary";
   status.textContent = "Uploading";
 
-  row.append(nameEl, sizeEl, prog, pct, status);
+  const rate = document.createElement("span");
+  rate.className = "t-rate";
+  rate.textContent = "";
+
+  row.append(nameEl, sizeEl, prog, pct, status, rate);
   transferList.prepend(row);
-  return { row, bar, pct, status };
+  return { row, bar, pct, status, rate };
 }
 
 function setStatus(u, statusText, kind) {
@@ -196,6 +201,22 @@ function setStatus(u, statusText, kind) {
   u.bar.classList.remove("progress-bar-animated", "progress-bar-striped");
   u.bar.style.width = "100%";
   u.pct.textContent = "100%";
+  u.rate.textContent = "";
+}
+
+function onTransferProgress(u, e) {
+  if (!e.lengthComputable) return;
+  const p = Math.round((e.loaded / e.total) * 100);
+  u.bar.style.width = p + "%";
+  u.pct.textContent = p + "%";
+  const now = Date.now();
+  const dt = (now - (u.lastTime || now)) / 1000;
+  if (dt > 0) {
+    const bytesPerSec = (e.loaded - (u.lastLoaded || 0)) / dt;
+    u.rate.textContent = formatSize(bytesPerSec) + "/s";
+  }
+  u.lastLoaded = e.loaded;
+  u.lastTime = now;
 }
 
 /* ---------- uploads with XHR progress ---------- */
@@ -209,12 +230,7 @@ function uploadFiles(files) {
     const fd = new FormData();
     fd.append("files", file, file.name);
 
-    xhr.upload.onprogress = (e) => {
-      if (!e.lengthComputable) return;
-      const p = Math.round((e.loaded / e.total) * 100);
-      u.bar.style.width = p + "%";
-      u.pct.textContent = p + "%";
-    };
+    xhr.upload.onprogress = (e) => onTransferProgress(u, e);
 
     xhr.onload = () => {
       inFlight--;
@@ -238,6 +254,50 @@ function uploadFiles(files) {
     xhr.open("POST", "/upload");
     xhr.send(fd);
   }
+}
+
+/* ---------- downloads with XHR progress ---------- */
+
+const BLOB_LIMIT = 300 * 1024 * 1024;
+
+function downloadFile(name, size) {
+  const url = "/files/" + encodeURIComponent(name);
+
+  if (size > BLOB_LIMIT) {
+    addHistoryRow(name, "large file - native download", "warning");
+    location.href = url;
+    return;
+  }
+
+  const u = addTransferRow(name, size);
+  u.status.className = "badge text-bg-info";
+  u.status.textContent = "Downloading";
+
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", url);
+  xhr.responseType = "blob";
+  xhr.onprogress = (e) => onTransferProgress(u, e);
+  xhr.onload = () => {
+    if (xhr.status === 401) {
+      location.href = "/";
+      return;
+    }
+    if (xhr.status !== 200) {
+      setStatus(u, "Failed", "danger");
+      return;
+    }
+    const blobUrl = URL.createObjectURL(xhr.response);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    setStatus(u, "Done", "success");
+  };
+  xhr.onerror = () => setStatus(u, "Failed", "danger");
+  xhr.send();
 }
 
 /* ---------- dropzone: drag & drop + click to pick ---------- */
@@ -269,7 +329,8 @@ fileInput.addEventListener("change", () => {
 tbody.addEventListener("click", async (e) => {
   const dl = e.target.closest("[data-dl]");
   if (dl) {
-    addHistoryRow(dl.dataset.dl, "downloaded", "info");
+    e.preventDefault();
+    downloadFile(dl.dataset.dl, Number(dl.dataset.size) || 0);
     return;
   }
   const del = e.target.closest("[data-del]");

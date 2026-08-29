@@ -77,6 +77,12 @@ body {
   text-align: right;
   color: #7d8fa5;
 }
+.transfer-row .t-rate {
+  width: 92px;
+  text-align: right;
+  color: #7d8fa5;
+  font-variant-numeric: tabular-nums;
+}
 
 /* Explorer-like narrow file table */
 .filetable {
