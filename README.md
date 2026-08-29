@@ -13,7 +13,11 @@ to upload into the folder you're looking at.
 - **Browse whole drives** (C:, D:, E:, … on Windows; real mount points on Linux) like a file explorer
 - **Download** any file (with progress + speed in the Transfers panel; >300 MB falls back to a native
   browser download)
-- **Zip a folder** on demand and download it as a single .zip
+- **Zip a folder** on demand and download it as a single .zip — background job with a live progress
+  bar (counting → zipping → downloading)
+- **Search** any drive live as you type (capped/depth-limited walk, so big drives stay responsive)
+- **Paste a Windows path** into the address bar (`G:\Downloads\songs`) and jump straight there
+- **Drive capacities** — each drive card shows its total and free space
 - **Upload** files into whatever folder you're currently viewing (drag & drop or tap the box)
 - **Delete** a file from the folder you're viewing
 - **PIN gate** — the terminal prints a 4-digit PIN; every request needs a signed cookie
@@ -70,10 +74,13 @@ Detected drives are always available. To serve extra paths, or lock one down, ad
 | Route | Purpose |
 | --- | --- |
 | `GET /` · `POST /login` | PIN page + signed-cookie login |
-| `GET /api/drives` | detected drives + configured shares (path, writable, online) |
+| `GET /api/drives` | detected drives + configured shares (path, writable, online, size, free) |
 | `GET /api/list?root=&path=` | folders/files in one directory (dirs first) |
+| `GET /api/search?root=&path=&q=&limit=&depth=` | live recursive name search (capped/depth-limited) |
 | `GET`/`HEAD /files/{share}/{subpath:path}` | download a file |
-| `GET /zip/{share}/{subpath:path}` | server-side zip of a folder |
+| `POST /zip/{share}/{subpath:path}/start` | start a background zip job |
+| `GET /zip/status/{job_id}` | poll the zip job (bytes zipped / total) |
+| `GET /zip/download/{job_id}` | download the finished zip (one-shot) |
 | `POST /upload?root=&path=` | upload one or more files into that folder |
 | `POST /files/{share}/{subpath:path}/delete` | delete a file (file-only by design) |
 
@@ -81,8 +88,8 @@ Detected drives are always available. To serve extra paths, or lock one down, ad
 
 - Every route is behind the PIN (signed cookie). Sending the PIN to visitors gives them read + write
   access to the served drives — that's the point of this app, so only share it on trusted networks.
-- Path traversal (`../`) is blocked on download, zip, upload and delete via `resolve()` +
-  `relative_to()` in `safe_rel`.
+- Path traversal (`../`) is blocked on download, zip (start/status/download), upload, delete and
+  search via `resolve()` + `relative_to()` in `safe_rel`.
 - Uploaded filenames are stripped of `/` and `\`; collisions auto-rename to `name_1.ext`.
 - Files upload/download stream in 1 MB chunks — big files don't eat RAM.
 
@@ -97,6 +104,6 @@ Detected drives are always available. To serve extra paths, or lock one down, ad
 
 ## Learning progress
 
-This repo `LEARN.md` is a concept-by-concept map of the whole app (44 ideas, each with a 2–5 minute
+This repo `LEARN.md` is a concept-by-concept map of the whole app (47 ideas, each with a 2–5 minute
 "do it yourself" task) plus a 40-minute interview rebuild drill. One page a day — the goal is to be
 able to rewrite this app from scratch, not to read about it.

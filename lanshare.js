@@ -46,6 +46,10 @@ const dropzoneLabel = document.getElementById("dropzoneLabel");
 const fileInput = document.getElementById("fileInput");
 const breadcrumb = document.getElementById("breadcrumb");
 const upBtn = document.getElementById("upBtn");
+const editPathBtn = document.getElementById("editPathBtn");
+const pathInput = document.getElementById("pathInput");
+const searchInput = document.getElementById("searchInput");
+const searchPanel = document.getElementById("searchPanel");
 const transferList = document.getElementById("transferList");
 const clearTransfers = document.getElementById("clearTransfers");
 const installBtn = document.getElementById("installBtn");
@@ -53,6 +57,9 @@ const installBtn = document.getElementById("installBtn");
 let inFlight = 0;
 let current = { root: null, path: "", rootName: "" };
 let writable = true;
+let drivesCache = null;
+let searchTimer = null;
+let searchSeq = 0;
 
 function getTransferEmpty() {
   return document.getElementById("transferEmpty");
@@ -88,14 +95,13 @@ function fileUrl(relPath) {
   return "/files/" + parts.map(encodeURIComponent).join("/");
 }
 
-function zipUrl(name) {
-  const parts = [current.root, ...segments(current.path), ...segments(name)];
-  return "/zip/" + parts.map(encodeURIComponent).join("/");
+function encParts(parts) {
+  return parts.map(encodeURIComponent).join("/");
 }
 
 function deleteUrl(relPath) {
   const parts = [current.root, ...segments(current.path), ...segments(relPath)];
-  return "/files/" + parts.map(encodeURIComponent).join("/") + "/delete";
+  return "/files/" + encParts(parts) + "/delete";
 }
 
 function listQuery() {
@@ -135,6 +141,7 @@ async function loadDrives() {
   }
   const drives = await res.json();
   if (!Array.isArray(drives)) return;
+  drivesCache = drives;
 
   list.innerHTML = "";
   if (drives.length === 0) {
@@ -158,7 +165,10 @@ async function loadDrives() {
     const path = document.createElement("div");
     path.className = "drive-path";
     path.textContent = d.path;
-    body.append(name, path);
+    const space = document.createElement("div");
+    space.className = "drive-space";
+    space.textContent = (d.online && d.size) ? (formatSize(d.free) + " free of " + formatSize(d.size)) : "";
+    body.append(name, path, space);
 
     card.append(ico, body);
 
@@ -178,6 +188,19 @@ async function loadDrives() {
       btn.textContent = "Open";
       btn.addEventListener("click", () => openDrive(d));
       card.append(btn);
+
+      card.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        card.classList.add("dragover");
+      });
+      card.addEventListener("dragleave", () => card.classList.remove("dragover"));
+      card.addEventListener("drop", (e) => {
+        e.preventDefault();
+        card.classList.remove("dragover");
+        if (e.dataTransfer && e.dataTransfer.files.length) {
+          uploadFiles(e.dataTransfer.files, d.id, "");
+        }
+      });
     }
 
     list.appendChild(card);
@@ -232,6 +255,9 @@ function renderBreadcrumb(name, driveName) {
 
 async function loadListing() {
   if (appView.hidden || !current.root) return;
+  endPathEdit();
+  hideSearch();
+  searchInput.placeholder = "Search " + (current.rootName || current.root) + "…";
   let res;
   try {
     res = await fetch("/api/list?" + listQuery());
@@ -404,7 +430,7 @@ function addTransferRow(name, size) {
 
   const sizeEl = document.createElement("span");
   sizeEl.className = "t-size text-secondary";
-  sizeEl.textContent = formatSize(size);
+  sizeEl.textContent = size == null ? "—" : formatSize(size);
 
   const prog = document.createElement("div");
   prog.className = "progress";
@@ -456,8 +482,8 @@ function onTransferProgress(u, e) {
 
 /* ---------- uploads with XHR progress ---------- */
 
-function uploadFiles(files) {
-  if (!current.root) return;
+function uploadFiles(files, rootId = current.root, path = current.path) {
+  if (!rootId) return;
   for (const file of files) {
     inFlight++;
     const u = addTransferRow(file.name, file.size);
@@ -491,7 +517,7 @@ function uploadFiles(files) {
       if (inFlight === 0) setTimeout(loadListing, 500);
     };
 
-    const q = listQuery();
+    const q = "root=" + encodeURIComponent(rootId) + "&path=" + encodeURIComponent(path);
     xhr.open("POST", "/upload?" + q);
     xhr.send(fd);
   }
@@ -539,9 +565,102 @@ function downloadFile(name, rel, size) {
   xhr.send();
 }
 
-function downloadZip(name, rel) {
-  addHistoryRow(name, "zipping + downloading", "info");
-  location.href = zipUrl(name);
+/* ---------- zip folders: background job + progress ---------- */
+
+function downloadZip(name) {
+  if (!current.root) return;
+  const u = addTransferRow(name + ".zip", null);
+  u.bar.style.width = "2%";
+  u.pct.textContent = "";
+
+  const parts = [current.root, ...segments(current.path), ...segments(name)];
+  fetch("/zip/" + encParts(parts) + "/start", { method: "POST" })
+    .then((r) => r.json())
+    .then((j) => {
+      if (!j.ok) {
+        setStatus(u, j.error || "Failed", "danger");
+        return;
+      }
+      const jobId = j.job_id;
+      const iv = setInterval(() => {
+        fetch("/zip/status/" + encodeURIComponent(jobId))
+          .then((r) => r.json())
+          .then((st) => {
+            if (!st.ok || st.state === "error") {
+              clearInterval(iv);
+              setStatus(u, (st && st.error) || "Failed", "danger");
+              return;
+            }
+            updateZipBar(u, st);
+            if (st.state === "done") {
+              clearInterval(iv);
+              transferZip(jobId, st.name, u);
+            }
+          })
+          .catch(() => {});
+      }, 400);
+    })
+    .catch(() => setStatus(u, "Failed", "danger"));
+}
+
+function updateZipBar(u, st) {
+  let pct = 2;
+  let label = "Counting files…";
+  if (st.phase === "zip") {
+    if (st.total > 0) {
+      pct = 2 + 88 * Math.min(1, st.done / st.total);
+      label = "Zipping… " + Math.round((st.done / st.total) * 100) + "%";
+    } else {
+      label = "Zipping…";
+    }
+  } else if (st.phase === "error") {
+    label = "Failed";
+  }
+  u.bar.style.width = Math.round(pct) + "%";
+  u.pct.textContent = Math.round(pct) + "%";
+  u.status.textContent = label;
+}
+
+function transferZip(jobId, zipName, u) {
+  u.status.textContent = "Downloading";
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", "/zip/download/" + encodeURIComponent(jobId));
+  xhr.responseType = "blob";
+  xhr.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round(90 + 10 * (e.loaded / e.total));
+    u.bar.style.width = pct + "%";
+    u.pct.textContent = pct + "%";
+    const now = Date.now();
+    const dt = (now - (u.lastTime || now)) / 1000;
+    if (dt > 0) {
+      const bytesPerSec = (e.loaded - (u.lastLoaded || 0)) / dt;
+      u.rate.textContent = formatSize(bytesPerSec) + "/s";
+    }
+    u.lastLoaded = e.loaded;
+    u.lastTime = now;
+  };
+  xhr.onload = () => {
+    if (xhr.status === 401) {
+      location.href = "/";
+      return;
+    }
+    if (xhr.status !== 200) {
+      setStatus(u, "Failed", "danger");
+      return;
+    }
+    const blobUrl = URL.createObjectURL(xhr.response);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = zipName + ".zip";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    setStatus(u, "Done", "success");
+  };
+  xhr.onerror = () => setStatus(u, "Failed", "danger");
+  xhr.send();
 }
 
 /* ---------- dropzone ---------- */
@@ -575,7 +694,7 @@ tbody.addEventListener("click", async (e) => {
   if (zipBtn) {
     const rel = zipBtn.dataset.zip;
     const name = rel.split("/").pop();
-    downloadZip(name, rel);
+    downloadZip(name);
     return;
   }
 
@@ -621,6 +740,191 @@ tbody.addEventListener("click", async (e) => {
 clearTransfers.addEventListener("click", () => {
   transferList.innerHTML = "";
   showTransferEmpty();
+});
+
+/* ---------- search ---------- */
+
+function hideSearch() {
+  searchPanel.classList.add("d-none");
+  searchPanel.innerHTML = "";
+}
+
+searchInput.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  const q = searchInput.value.trim();
+  if (!q || !current.root) {
+    hideSearch();
+    return;
+  }
+  searchTimer = setTimeout(() => runSearch(q), 300);
+});
+
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideSearch();
+});
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".search-bar")) hideSearch();
+});
+
+async function runSearch(q) {
+  const mySeq = ++searchSeq;
+  let res;
+  try {
+    res = await fetch("/api/search?root=" + encodeURIComponent(current.root) +
+      "&path=" + encodeURIComponent(current.path) + "&q=" + encodeURIComponent(q));
+  } catch (e) {
+    return;
+  }
+  if (mySeq !== searchSeq) return;
+  if (res.status === 401) {
+    location.href = "/";
+    return;
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    return;
+  }
+  const results = (data && Array.isArray(data.results)) ? data.results : [];
+  if (mySeq !== searchSeq) return;
+  renderSearchResults(results, q);
+}
+
+function renderSearchResults(results, q) {
+  searchPanel.innerHTML = "";
+  searchPanel.classList.remove("d-none");
+  if (!results.length) {
+    const d = document.createElement("div");
+    d.className = "search-empty";
+    d.textContent = 'Nothing found matching "' + q + '".';
+    searchPanel.appendChild(d);
+    return;
+  }
+  for (const r of results) {
+    const row = document.createElement("div");
+    row.className = "search-row";
+
+    const ico = document.createElement("span");
+    ico.textContent = r.kind === "dir" ? "📁" : iconFor(r.name);
+
+    const nm = document.createElement("span");
+    nm.className = "s-name";
+    nm.textContent = r.name;
+    nm.title = r.name;
+
+    const p = document.createElement("span");
+    p.className = "s-path";
+    p.textContent = r.path;
+    p.title = r.path;
+
+    const sz = document.createElement("span");
+    sz.className = "s-size";
+    sz.textContent = r.kind === "dir" ? "" : formatSize(r.size);
+
+    row.append(ico, nm, p, sz);
+
+    row.addEventListener("click", () => {
+      hideSearch();
+      const segs = segments(r.path);
+      if (r.kind === "dir") {
+        current.path = segs.join("/");
+      } else {
+        segs.pop();
+        current.path = segs.join("/");
+      }
+      if (viewFiles.hidden) showView("files");
+      loadListing();
+    });
+    searchPanel.appendChild(row);
+  }
+}
+
+/* ---------- go to a path (paste a Windows path) ---------- */
+
+function driveRootFor(share) {
+  return (share.path || "").replace(/\\+/g, "/").replace(/\/+$/, "");
+}
+
+function displayPath() {
+  const d = Array.isArray(drivesCache)
+    ? drivesCache.find((x) => x.id === current.root)
+    : null;
+  const rp = d ? driveRootFor(d) : (current.rootName || current.root);
+  return current.path ? rp + "/" + current.path : rp;
+}
+
+function beginPathEdit() {
+  pathInput.value = displayPath();
+  pathInput.classList.remove("d-none");
+  breadcrumb.hidden = true;
+  pathInput.focus();
+  pathInput.select();
+}
+
+function endPathEdit() {
+  pathInput.classList.add("d-none");
+  breadcrumb.hidden = false;
+}
+
+function findShareForPath(text) {
+  if (!Array.isArray(drivesCache)) return null;
+  const t = (text || "").trim().replace(/\\+/g, "/").replace(/\/+$/, "").toLowerCase();
+  if (!t) return null;
+  for (const d of drivesCache) {
+    if (t === driveRootFor(d).toLowerCase() || t === d.id.toLowerCase()) {
+      return { root: d.id, path: "" };
+    }
+  }
+  let best = null;
+  for (const d of drivesCache) {
+    const rp = driveRootFor(d).toLowerCase();
+    if (t.startsWith(rp + "/") && (!best || rp.length > best.len)) {
+      best = { root: d.id, path: t.slice(rp.length + 1), len: rp.length };
+    }
+  }
+  return best ? { root: best.root, path: best.path } : null;
+}
+
+function commitPath() {
+  const val = pathInput.value;
+  endPathEdit();
+  if (!val.trim()) return;
+  const m = findShareForPath(val);
+  if (!m) {
+    alert("That path is not inside any shared drive on this device.");
+    return;
+  }
+  const d = Array.isArray(drivesCache)
+    ? drivesCache.find((x) => x.id === m.root)
+    : null;
+  current.root = m.root;
+  current.rootName = d ? d.name : current.rootName;
+  current.path = m.path;
+  writable = d ? d.writable : true;
+  if (viewFiles.hidden) showView("files");
+  loadListing();
+}
+
+editPathBtn.addEventListener("click", beginPathEdit);
+
+pathInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    commitPath();
+  } else if (e.key === "Escape") {
+    endPathEdit();
+  }
+});
+
+pathInput.addEventListener("blur", endPathEdit);
+
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && e.key.toLowerCase() === "l") {
+    e.preventDefault();
+    beginPathEdit();
+  }
 });
 
 /* ---------- PWA ---------- */

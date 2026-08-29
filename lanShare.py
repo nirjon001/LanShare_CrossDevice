@@ -6,6 +6,8 @@ import json
 import string
 import tempfile
 import zipfile
+import shutil
+import threading
 from pathlib import Path
 from datetime import datetime
 import re
@@ -26,6 +28,9 @@ ICON_DIR = BASE_DIR / "icons"
 PIN = os.getenv("LANSHARE_PIN") or f"{secrets.randbelow(10000):04d}"
 SESSION_COOKIE = "lan_share_auth"
 signer = URLSafeSerializer(secrets.token_hex(32))
+
+SKIP_SEARCH = {"system volume information", "$recycle.bin", "windows.old"}
+ZIP_JOBS = {}
 
 app = FastAPI()
 console = Console()
@@ -167,13 +172,23 @@ async def api_drives(request: Request):
         return JSONResponse({"error": "auth"}, status_code=401)
     out = []
     for s in SHARES:
+        online = Path(s["path"]).is_dir()
+        size = free = 0
+        if online:
+            try:
+                usage = shutil.disk_usage(s["path"])
+                size, free = usage.total, usage.free
+            except OSError:
+                pass
         out.append({
             "id": s["id"],
             "name": s["name"],
             "path": s["path"],
             "type": s["type"],
             "writable": s["writable"],
-            "online": Path(s["path"]).is_dir(),
+            "online": online,
+            "size": size,
+            "free": free,
         })
     return out
 
@@ -214,6 +229,62 @@ async def api_list(request: Request, root: str, path: str = ""):
         "dirs": dirs,
         "files": files,
     }
+
+
+@app.get("/api/search")
+async def api_search(request: Request, root: str, path: str = "", q: str = "",
+                     limit: int = 200, depth: int = 10):
+    if not is_authed(request):
+        return JSONResponse({"error": "auth"}, status_code=401)
+    share = share_by_id(root)
+    if share is None:
+        return JSONResponse({"ok": False, "error": "no such share"}, status_code=404)
+    base, target = safe_rel(share, path)
+    if target is None:
+        return JSONResponse({"ok": False, "error": "outside share"}, status_code=403)
+    if not target.is_dir():
+        return JSONResponse({"ok": False, "error": "not a folder"}, status_code=404)
+    needle = (q or "").strip().lower()
+    results = []
+    if not needle:
+        return {"ok": True, "results": results}
+    limit = max(1, min(limit, 500))
+    depth = max(1, min(depth, 25))
+
+    def walk(scan_dir, rel, level):
+        if len(results) >= limit or level > depth:
+            return
+        try:
+            with os.scandir(scan_dir) as it:
+                entries = sorted(it, key=lambda e: e.name.lower())
+        except OSError:
+            return
+        for e in entries:
+            if len(results) >= limit:
+                return
+            try:
+                is_dir = e.is_dir(follow_symlinks=False)
+                if needle in e.name.lower():
+                    try:
+                        st = e.stat()
+                        results.append({
+                            "name": e.name,
+                            "kind": "dir" if is_dir else "file",
+                            "size": st.st_size,
+                            "mtime": st.st_mtime,
+                            "path": "/".join(p for p in (rel, e.name) if p),
+                        })
+                    except OSError:
+                        results.append({"name": e.name, "kind": "dir", "size": 0,
+                                        "mtime": 0,
+                                        "path": "/".join(p for p in (rel, e.name) if p)})
+                if is_dir and e.name.lower() not in SKIP_SEARCH:
+                    walk(e.path, "/".join(p for p in (rel, e.name) if p), level + 1)
+            except OSError:
+                continue
+
+    walk(target, "", 1)
+    return {"ok": True, "results": results}
 
 
 @app.get("/style.css")
@@ -302,40 +373,103 @@ async def download_head(request: Request, share: str, subpath: str = ""):
     })
 
 
-@app.get("/zip/{share}/{subpath:path}")
-async def zip_folder(request: Request, share: str, subpath: str = ""):
+@app.post("/zip/{share}/{subpath:path}/start")
+async def zip_start(request: Request, share: str, subpath: str = ""):
     if not is_authed(request):
-        return RedirectResponse("/", status_code=307)
+        return JSONResponse({"error": "auth"}, status_code=401)
     s = share_by_id(share)
     if s is None:
-        return RedirectResponse("/", status_code=307)
+        return JSONResponse({"ok": False, "error": "no such share"}, status_code=404)
     base, target = safe_rel(s, subpath)
-    if target is None or not target.is_dir():
-        return RedirectResponse("/", status_code=307)
+    if target is None:
+        return JSONResponse({"ok": False, "error": "outside share"}, status_code=403)
+    if not target.is_dir():
+        return JSONResponse({"ok": False, "error": "not a folder"}, status_code=404)
     folder_name = target.name or s["name"]
+    job_id = secrets.token_hex(6)
     fd, tmp = tempfile.mkstemp(suffix=".zip")
     os.close(fd)
+    job = {
+        "id": job_id,
+        "state": "working",
+        "phase": "count",
+        "done": 0,
+        "total": 0,
+        "name": folder_name,
+        "path": tmp,
+        "error": None,
+    }
+    ZIP_JOBS[job_id] = job
+    console.print(f"[magenta]zipping[/magenta] [cyan]{target}[/cyan] (job {job_id})")
+    threading.Thread(target=_zip_worker, args=(job, target, folder_name), daemon=True).start()
+    return {"ok": True, "job_id": job_id, "name": folder_name}
+
+
+@app.get("/zip/status/{job_id}")
+async def zip_status(request: Request, job_id: str):
+    if not is_authed(request):
+        return JSONResponse({"error": "auth"}, status_code=401)
+    job = ZIP_JOBS.get(job_id)
+    if job is None:
+        return JSONResponse({"ok": False, "error": "no such job"}, status_code=404)
+    return {
+        "ok": True,
+        "id": job["id"],
+        "state": job["state"],
+        "phase": job["phase"],
+        "done": job["done"],
+        "total": job["total"],
+        "name": job["name"],
+        "error": job["error"],
+    }
+
+
+@app.get("/zip/download/{job_id}")
+async def zip_download(request: Request, job_id: str):
+    if not is_authed(request):
+        return RedirectResponse("/", status_code=307)
+    job = ZIP_JOBS.get(job_id)
+    if job is None or job["state"] != "done" or not job["path"]:
+        return RedirectResponse("/", status_code=307)
+    tmp = job["path"]
+    ZIP_JOBS.pop(job_id, None)
+    console.print(f"[magenta]zip served[/magenta] {job['name']}.zip")
+    return FileResponse(
+        tmp,
+        filename=f"{job['name']}.zip",
+        media_type="application/zip",
+        background=BackgroundTask(_remove_file, tmp),
+    )
+
+
+def _zip_worker(job, target, folder_name):
+    total = 0
+    for root_dir, _, fnames in os.walk(target):
+        for fn in fnames:
+            try:
+                total += (Path(root_dir) / fn).stat().st_size
+            except OSError:
+                pass
+    job["phase"] = "zip"
+    job["total"] = total or 1
     try:
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(job["path"], "w", zipfile.ZIP_DEFLATED) as zf:
             for root_dir, _, fnames in os.walk(target):
                 root_p = Path(root_dir)
                 for fn in fnames:
                     full = root_p / fn
-                    arc = str(Path(folder_name) / full.relative_to(target))
-                    zf.write(full, arc)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        return JSONResponse({"ok": False, "error": "could not create zip"}, status_code=500)
-    console.print(f"[magenta]zipped[/magenta] [cyan]{target}[/cyan] -> {folder_name}.zip")
-    return FileResponse(
-        tmp,
-        filename=f"{folder_name}.zip",
-        media_type="application/zip",
-        background=BackgroundTask(_remove_file, tmp),
-    )
+                    try:
+                        st = full.stat()
+                        zf.write(full, str(Path(folder_name) / full.relative_to(target)))
+                        job["done"] += st.st_size
+                    except OSError:
+                        continue
+        job["state"] = "done"
+        job["phase"] = "done"
+    except Exception as e:
+        job["state"] = "error"
+        job["phase"] = "error"
+        job["error"] = str(e)
 
 
 @app.post("/files/{share}/{subpath:path}/delete")

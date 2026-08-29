@@ -9,7 +9,7 @@ Each section is ONE idea. For every idea there is:
   the name.
 - **Do it yourself** — a 2-5 minute task. Do these until the answer comes without thinking.
 
-The whole app = ~44 ideas. One page a day = a month to real ownership.
+The whole app = ~47 ideas. One page a day = a month to real ownership.
 
 ## The 20-minute rule
 
@@ -62,8 +62,9 @@ Never move to the next section with an unchecked gap — gaps compound.
 
 ### 7. Route = URL → function mapping
 - **What it is**: `@app.get("/path")` says "when someone GETs this URL, call this function".
-- **Find it**: `lanShare.py → index()`, `login()`, `api_drives()`, `api_list()`, `upload()`,
-  `download()`, `download_head()`, `zip_folder()`, `delete()`
+- **Find it**: `lanShare.py → index()`, `login()`, `api_drives()`, `api_list()`, `api_search()`,
+  `upload()`, `download()`, `download_head()`, `zip_start()`, `zip_status()`, `zip_download()`,
+  `delete()`
 - **Do it**: add `@app.get("/ping")` returning `{"pong": True}`; visit `/ping`. (Now add auth to it —
   see idea 15.)
 
@@ -83,9 +84,9 @@ Never move to the next section with an unchecked gap — gaps compound.
 ### 10. Response types
 - **What it is**: a route returns different kinds of answers: HTML, JSON, a file, a redirect, or a status.
 - **Find it**: `HTMLResponse` in `index()`; `JSONResponse` in `api_drives()` / `api_list()` /
-  `upload()` / `delete()`; `RedirectResponse` in `login()` / `download()` / `zip_folder()`;
-  `FileResponse` in `download()` / `zip_folder()` and the css/js/icons routes;
-  bare `Response(status_code=...)` in `download_head()`
+  `api_search()` / `zip_start()` / `zip_status()` / `upload()` / `delete()`; `RedirectResponse` in
+  `login()` / `download()` / `zip_download()`; `FileResponse` in `download()` / `zip_download()` and
+  the css/js/icons routes; bare `Response(status_code=...)` in `download_head()`
 - **Do it**: change the "missing file" case in `download_head()` to
   `JSONResponse({"error":"missing"}, status_code=404)` and HEAD a missing file.
 
@@ -126,9 +127,11 @@ Never move to the next section with an unchecked gap — gaps compound.
 - **What it is**: attack where `../` reaches outside the allowed folder. Defence: `resolve()` then
   `relative_to()` must stay inside the share root. One helper (`safe_rel`) guards download, zip,
   upload and delete.
-- **Find it**: `lanShare.py → safe_rel()`; callers include `download()`, `zip_folder()`, `delete()`
+- **Find it**: `lanShare.py → safe_rel()`; callers include `download()`, `zip_start()`,
+  `zip_download()`, `delete()`, `api_search()`
 - **Do it**: curl `/files/C/..%2F..%2FWindows/win.ini` — it must bounce back to the login page.
-  Try the same through `/zip` and `/api/list?root=C&path=..%2F..%2FWindows`.
+  Try the same through `/zip` (POST `/zip/C/..%2F..%2FWindows/start` → 403), `/api/list?root=C&path=..%2F..%2FWindows`,
+  and `/api/search?root=C&path=..%2F..%2FWindows&q=x`.
 
 ### 17. Filename sanitising
 - **What it is**: strip `/` and `\` from an uploaded name so it can't escape or create subfolders.
@@ -294,13 +297,15 @@ Never move to the next section with an unchecked gap — gaps compound.
 - **Do it**: plug in a USB stick and rerun — the new drive appears in the Drives tab without restart
   code changes (run the server again) and is browsable in the browser.
 
-### 42. Zipping a folder on demand
-- **What it is**: `zipfile` walks the folder and writes members with a relative `arcname`, so the zip
-  unzips into a clean subfolder. The temp zip is deleted after the browser finishes downloading it via
-  a `BackgroundTask`.
-- **Find it**: `lanShare.py → zip_folder()`; cleanup helper `_remove_file()`
-- **Do it**: change the arcname to the raw absolute path and inspect the zip layout — see why relative
-  names are nicer.
+### 42. Zipping a folder — the background job
+- **What it is**: zipping a big folder is slow, so `zip_start()` launches a **thread** that counts the
+  bytes, then writes the zip. The browser **polls** `zip_status()` every 400 ms and shows the same
+  progress bar filling from "Counting…" through "Zipping… %" and into the download %. When the
+  download finishes, a `BackgroundTask` deletes the temp zip.
+- **Find it**: `lanShare.py → zip_start()`, `zip_status()`, `zip_download()`, `_zip_worker()`,
+  `ZIP_JOBS`; client side `lanshare.js → downloadZip()`, `updateZipBar()`, `transferZip()`
+- **Do it**: while a big folder zips, open `/zip/status/<job>` in another tab and watch the JSON
+  `done`/`total` numbers climb.
 
 ### 43. Read-only shares
 - **What it is**: a share can be `writable: false`; upload and delete then return 403 before touching
@@ -310,11 +315,43 @@ Never move to the next section with an unchecked gap — gaps compound.
 - **Do it**: set `"writable": false` on the lanshare share, restart, try an upload from the phone — 403.
 
 ### 44. The Drives view
-- **What it is**: `/api/drives` returns the full list (type, path, writable, online). The parent "Open"
-  button calls `openDrive()` which sets `current.root` and jumps to the Files view — the state machine
-  in action.
+- **What it is**: `/api/drives` returns the full list (type, path, writable, online, and now **size +
+  free space** via `shutil.disk_usage`). The parent "Open" button calls `openDrive()` which sets
+  `current.root` and jumps to the Files view — the state machine in action. Each card is also a drag
+  target: dropping a file on a drive root uploads it there.
 - **Find it**: `lanShare.py → api_drives()`; `lanshare.js → loadDrives()`, `openDrive()`
 - **Do it**: add a share with a path that doesn't exist; it should show "Offline" and no Open button.
+
+---
+
+## Group I — search & go-to-path (M1)
+
+### 45. Recursive search
+- **What it is**: `/api/search` walks the folder tree with `os.scandir` (depth- and result-capped so a
+  3 TB drive stays responsive) and returns every entry whose name contains the query. The client
+  debounces the keystrokes (300 ms) and marks each result with a "previous request" sequence number so
+  an old slow answer can't paint over a new one.
+- **Find it**: `lanShare.py → api_search()` (`walk()` closure, `SKIP_SEARCH`, `limit`/`depth`);
+  `lanshare.js → runSearch()`, `renderSearchResults()`, the `searchSeq` counter
+- **Do it**: search "hello" on a drive — then curl `/api/search?root=G&path=&q=hello&depth=1` and see
+  the depth cap hide anything nested.
+
+### 46. The address bar (paste a Windows path)
+- **What it is**: the breadcrumb has a pencil button that swaps it for a text field. You paste
+  `G:\Downloads\songs` and press Enter. The **client** maps the text to a share+relative path using a
+  longest-prefix match against the drives list — no server change, and it normalises `\` → `/`.
+- **Find it**: `lanshare.js → findShareForPath()`, `displayPath()`, `commitPath()`; `Ctrl+L` also opens it
+- **Do it**: paste a path you copied from Windows Explorer, then paste one that isn't a shared drive
+  (`H:\...`) and read the alert.
+
+### 47. One progress bar across two phases
+- **What it is**: a single transfer row tracks two separate efforts — the server zip job (0–90%, by
+  polling) and the XHR blob download of the finished file (90–100%, by `onprogress`). Same bar, both
+  islands of progress, one finish state.
+- **Find it**: `lanshare.js → updateZipBar()` (zip phase), `transferZip()` (download phase),
+  `setStatus()` (final)
+- **Do it**: lower the 88 to 40 in `updateZipBar()` and watch the zip phase overflow the bar before
+  the file even starts coming down.
 
 ---
 
@@ -326,14 +363,17 @@ Take `lanShare.py` (the server) and write it from an empty file in under 40 minu
 2. PIN + signed-cookie signer + `is_authed`
 3. `GET /` serving the HTML with placeholders swapped
 4. `POST /login` set cookie
-5. `GET /api/drives` (drives + shares) and `GET /api/list?root=&path=`
-6. `POST /upload?root=&path=` streaming big files to disk (unique name)
-7. `GET /files/{share}/{subpath:path}` + `HEAD`, and `GET /zip/{share}/{subpath:path}`
-8. `POST /files/{share}/{subpath:path}/delete`
-9. the `safe_rel` traversal guard used by every filesystem route
-10. startup panel (rich) + QR + uvicorn
+5. `GET /api/drives` (drives + shares + size/free) and `GET /api/list?root=&path=`
+6. `GET /api/search?root=&path=&q=` (walk with depth/limit caps)
+7. `POST /upload?root=&path=` streaming big files to disk (unique name)
+8. `GET /files/{share}/{subpath:path}` + `HEAD`
+9. `POST /zip/{share}/{subpath:path}/start` + `GET /zip/status/{id}` + `GET /zip/download/{id}`
+10. `POST /files/{share}/{subpath:path}/delete`
+11. the `safe_rel` traversal guard used by every filesystem route
+12. startup panel (rich) + QR + uvicorn
 
 Then do the same for `lanshare.js`: `loadDrives`, `openDrive`, `loadListing` + breadcrumb render,
-folder navigation (state machine), XHR progress uploads, blob download + native fallback, and the
-401 guard. If a step stalls longer than 20 minutes, stop, look it up, and do it from memory the next
-day. Repeat weekly.
+folder navigation (state machine), live search (debounce + sequence guard), go-to-path (`findShareForPath`),
+zip job polling with a two-phase progress bar, XHR progress uploads, blob download + native fallback,
+and the 401 guard. If a step stalls longer than 20 minutes, stop, look it up, and do it from memory
+the next day. Repeat weekly.

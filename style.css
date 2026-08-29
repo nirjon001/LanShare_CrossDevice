@@ -80,6 +80,7 @@ body {
 
 /* breadcrumbs */
 .crumbbar { min-height: 32px; flex-wrap: wrap; }
+.path-input { max-width: 60%; }
 .breadcrumb-wrap {
   display: flex;
   align-items: center;
@@ -87,6 +88,8 @@ body {
   overflow-x: auto;
   white-space: nowrap;
   scrollbar-width: none;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .breadcrumb-wrap::-webkit-scrollbar { display: none; }
 .crumb {
@@ -101,6 +104,59 @@ body {
 }
 .crumb:last-child { color: #fff; border-color: var(--brand); }
 .crumb-sep { color: var(--text-dim); font-size: 0.72rem; flex: 0 0 auto; }
+
+/* search */
+.search-bar { max-width: 560px; }
+.search-ico {
+  position: absolute;
+  left: 0.6rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  pointer-events: none;
+}
+#searchInput { padding-left: 2rem; }
+.search-panel {
+  position: absolute;
+  top: calc(100% + 0.3rem);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-height: 60vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.7rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.search-row:last-child { border-bottom: none; }
+.search-row:hover { background: rgba(56, 189, 248, 0.08); }
+.s-name {
+  max-width: 34%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.s-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.s-size { color: var(--text-dim); flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.search-empty { padding: 0.6rem 0.7rem; color: var(--text-dim); font-size: 0.85rem; }
 
 /* dashed upload zone */
 .dropzone {
@@ -246,7 +302,15 @@ body {
   max-width: 40vw;
 }
 .drive-card .drive-status { margin: 0 0.4rem 0 auto; }
+.drive-card .drive-space {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
 .drive-card button { flex: 0 0 auto; }
+.drive-card.dragover {
+  border-color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.10);
+}
 
 /* phones: sidebar becomes bottom tab bar */
 @media (max-width: 767px) {

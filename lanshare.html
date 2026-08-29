@@ -71,7 +71,17 @@
       <section id="view-files">
         <div class="crumbbar d-flex align-items-center gap-2 mb-3">
           <button id="upBtn" class="btn btn-sm btn-outline-secondary" title="Up one level">&#8593;</button>
+          <button id="editPathBtn" class="btn btn-sm btn-outline-secondary" title="Go to a path (paste e.g. G:\Downloads)">&#9998;</button>
+          <input id="pathInput" class="form-control form-control-sm path-input d-none"
+                 placeholder="G:\Downloads\songs" autocomplete="off" spellcheck="false">
           <div id="breadcrumb" class="breadcrumb-wrap"></div>
+        </div>
+
+        <div class="search-bar position-relative mb-3">
+          <span class="search-ico">&#128269;</span>
+          <input id="searchInput" class="form-control form-control-sm" autocomplete="off"
+                 placeholder="Search this drive&hellip;" spellcheck="false">
+          <div id="searchPanel" class="search-panel d-none"></div>
         </div>
 
         <div id="dropzone" class="dropzone card" role="button" tabindex="0">
