@@ -1,0 +1,75 @@
+:root {
+  --brand: #38bdf8;
+}
+
+body {
+  background: linear-gradient(165deg, #0a111f 0%, #0e1630 55%, #0a111f 100%);
+  min-height: 100vh;
+}
+
+/* qBittorrent-style dark top bar */
+.topbar {
+  background: #0d1424;
+  border-bottom: 1px solid #1e2a44;
+}
+
+/* dashed upload zone */
+.dropzone {
+  border: 2px dashed var(--brand);
+  background: transparent;
+}
+.dropzone:hover {
+  background: rgba(56, 189, 248, 0.05);
+}
+.dz-icon {
+  font-size: 2.2rem;
+}
+
+/* Explorer-like narrow file table */
+.filetable {
+  font-size: 0.9rem;
+}
+.filetable thead th {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #7d8fa5;
+  border-bottom: 1px solid #1e2a44;
+}
+.filetable td {
+  padding: 0.42rem 0.6rem;
+  white-space: nowrap;
+}
+.filetable tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.fname {
+  max-width: 38vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fileicon {
+  font-size: 1.25rem;
+}
+
+.col-icon { width: 2.6rem; }
+.col-size { width: 100px; }
+.col-date { width: 150px; }
+.col-actions { width: 110px; }
+
+.empty {
+  padding: 2rem 0;
+}
+
+/* phones: drop size + date columns, widen name */
+@media (max-width: 576px) {
+  .col-size,
+  .col-date {
+    display: none;
+  }
+  .fname {
+    max-width: 52vw;
+  }
+}
