@@ -17,12 +17,65 @@ body {
 .dropzone {
   border: 2px dashed var(--brand);
   background: transparent;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }
-.dropzone:hover {
-  background: rgba(56, 189, 248, 0.05);
+.dropzone:hover,
+.dropzone:focus {
+  background: rgba(56, 189, 248, 0.06);
+  border-color: #7dd3fc;
+  outline: none;
+}
+.dropzone.dragover {
+  background: rgba(56, 189, 248, 0.14);
+  border-color: #7dd3fc;
+  transform: translateY(-1px);
 }
 .dz-icon {
   font-size: 2.2rem;
+}
+
+/* PIN login card */
+.login-card {
+  max-width: 400px;
+  border: 1px solid #1e2a44;
+  background: #0d1424;
+}
+.pin-input {
+  letter-spacing: 0.5em;
+  font-size: 1.2rem;
+  max-width: 110px;
+  text-align: center;
+}
+
+/* transfer history rows */
+.transfer-panel {
+  border-top: 1px solid #1e2a44;
+  padding-top: 1rem;
+}
+.transfer-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.transfer-row .t-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.transfer-row .progress {
+  flex: 0 1 170px;
+  height: 0.5rem;
+}
+.transfer-row .t-pct {
+  width: 3rem;
+  text-align: right;
+  color: #7d8fa5;
 }
 
 /* Explorer-like narrow file table */
@@ -57,7 +110,14 @@ body {
 .col-icon { width: 2.6rem; }
 .col-size { width: 100px; }
 .col-date { width: 150px; }
-.col-actions { width: 110px; }
+.col-actions { width: 172px; }
+.col-actions .btn {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+}
+.col-actions .btn + .btn {
+  margin-left: 0.35rem;
+}
 
 .empty {
   padding: 2rem 0;
