@@ -31,6 +31,7 @@ signer = URLSafeSerializer(secrets.token_hex(32))
 
 SKIP_SEARCH = {"system volume information", "$recycle.bin", "windows.old"}
 ZIP_JOBS = {}
+BAG_FILE = BASE_DIR / "bag.json"
 
 app = FastAPI()
 console = Console()
@@ -285,6 +286,161 @@ async def api_search(request: Request, root: str, path: str = "", q: str = "",
 
     walk(target, "", 1)
     return {"ok": True, "results": results}
+
+
+class BagStore:
+    """The no-copy side list: pointers to files (name + share + path), zero bytes stored."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._entries = self._read()
+
+    def _read(self):
+        try:
+            data = json.loads(BAG_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+        except (OSError, json.JSONDecodeError):
+            pass
+        return []
+
+    def all(self):
+        with self._lock:
+            return list(self._entries)
+
+    def add(self, **entry):
+        with self._lock:
+            self._entries = [e for e in self._entries if e.get("id") != entry["id"]]
+            self._entries.append(entry)
+            self._write()
+            return entry
+
+    def remove(self, ids):
+        with self._lock:
+            idset = set(ids)
+            before = len(self._entries)
+            self._entries = [e for e in self._entries if e["id"] not in idset]
+            self._write()
+            return before - len(self._entries)
+
+    def _write(self):
+        BAG_FILE.write_text(json.dumps(self._entries, indent=2), encoding="utf-8")
+
+
+BAG = BagStore()
+
+
+@app.get("/api/bag")
+async def bag_list(request: Request):
+    if not is_authed(request):
+        return JSONResponse({"error": "auth"}, status_code=401)
+    out = []
+    for e in BAG.all():
+        entry = dict(e)
+        entry["missing"] = False
+        s = share_by_id(e["share"])
+        if s is None:
+            entry["missing"] = True
+        else:
+            base, target = safe_rel(s, e["path"])
+            if target is None or not target.is_file():
+                entry["missing"] = True
+            else:
+                entry["size"] = target.stat().st_size
+        out.append(entry)
+    return {"ok": True, "items": out}
+
+
+@app.post("/api/bag/add")
+async def bag_add(request: Request):
+    if not is_authed(request):
+        return JSONResponse({"error": "auth"}, status_code=401)
+    body = await request.json()
+    s = share_by_id(body.get("share", ""))
+    if s is None:
+        return JSONResponse({"ok": False, "error": "no such share"}, status_code=404)
+    base, target = safe_rel(s, body.get("path", ""))
+    if target is None:
+        return JSONResponse({"ok": False, "error": "outside share"}, status_code=403)
+    if not target.is_file():
+        return JSONResponse({"ok": False, "error": "not a file"}, status_code=404)
+    entry = {
+        "id": secrets.token_hex(6),
+        "share": s["id"],
+        "path": body["path"],
+        "name": target.name,
+        "size": target.stat().st_size,
+        "added": datetime.now().isoformat(timespec="seconds"),
+    }
+    for existing in BAG.all():
+        if existing.get("share") == entry["share"] and existing.get("path") == entry["path"]:
+            return {"ok": True, "already": True, "item": existing}
+    BAG.add(**entry)
+    console.print(f"[cyan]bag +[/cyan] {entry['name']} ({entry['size']} B)")
+    return {"ok": True, "item": entry}
+
+
+@app.post("/api/bag/remove")
+async def bag_remove(request: Request):
+    if not is_authed(request):
+        return JSONResponse({"error": "auth"}, status_code=401)
+    body = await request.json()
+    removed = BAG.remove(body.get("ids") or [])
+    return {"ok": True, "removed": removed}
+
+
+@app.post("/api/bag/pull")
+async def bag_pull(request: Request):
+    if not is_authed(request):
+        return JSONResponse({"error": "auth"}, status_code=401)
+    body = await request.json()
+    ids = body.get("ids") or []
+    mode = body.get("mode", "copy")
+    s = share_by_id(body.get("dest_root", ""))
+    if s is None:
+        return JSONResponse({"ok": False, "error": "no such share"}, status_code=404)
+    if not s["writable"]:
+        return JSONResponse({"ok": False, "error": "this share is read-only"}, status_code=403)
+    base, dest = safe_rel(s, body.get("dest_path", ""))
+    if dest is None:
+        return JSONResponse({"ok": False, "error": "outside share"}, status_code=403)
+    if not dest.is_dir():
+        return JSONResponse({"ok": False, "error": "not a folder"}, status_code=404)
+    done, failed, pulled_ids = [], [], []
+    for e in BAG.all():
+        if e["id"] not in ids:
+            continue
+        src_s = share_by_id(e["share"])
+        if src_s is None:
+            failed.append({"id": e["id"], "name": e.get("name", "?"), "error": "share gone"})
+            continue
+        sbase, src = safe_rel(src_s, e["path"])
+        if src is None or not src.is_file():
+            failed.append({"id": e["id"], "name": e.get("name", "?"), "error": "file missing"})
+            continue
+        dest_file = unique_path(dest, src.name)
+        try:
+            if mode == "move":
+                shutil.move(str(src), str(dest_file))
+            else:
+                shutil.copy2(str(src), str(dest_file))
+        except OSError as ex:
+            failed.append({"id": e["id"], "name": src.name, "error": str(ex)})
+            continue
+        done.append({"id": e["id"], "name": dest_file.name, "size": dest_file.stat().st_size})
+        pulled_ids.append(e["id"])
+    if mode == "move":
+        BAG.remove(pulled_ids)
+    console.print(f"[cyan]bag pull[/cyan] {mode}: {len(done)} ok, {len(failed)} failed")
+    return {"ok": True, "done": done, "failed": failed}
+
+
+@app.post("/api/bag/clear")
+async def bag_clear(request: Request):
+    if not is_authed(request):
+        return JSONResponse({"error": "auth"}, status_code=401)
+    removed = BAG.remove([e["id"] for e in BAG.all()])
+    return {"ok": True, "removed": removed}
 
 
 @app.get("/style.css")

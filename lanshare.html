@@ -58,6 +58,9 @@
         <span class="badge text-bg-info" id="lanIp">{{lan_ip}}</span>
         <span class="small text-secondary" id="fileCount"></span>
         <span class="ms-auto d-flex align-items-center gap-2">
+          <button id="bagToggle" class="btn btn-sm btn-outline-light position-relative" type="button">
+            &#128230; <span id="bagCount" class="badge text-bg-warning rounded-pill">0</span>
+          </button>
           <button id="installBtn" class="btn btn-sm btn-outline-light d-none" type="button">
             Install App
           </button>
@@ -139,6 +142,29 @@
       </section>
 
     </main>
+  </div>
+
+  <div id="bagPanel" class="bag-panel d-none">
+    <div class="bag-head d-flex align-items-center gap-2">
+      <strong>&#128230; Bag</strong>
+      <span class="small text-secondary">no-copy pointers</span>
+      <span class="ms-auto d-flex align-items-center gap-2">
+        <button id="bagClear" class="btn btn-sm btn-link text-secondary text-decoration-none">Clear</button>
+        <button id="bagClose" class="btn-close"></button>
+      </span>
+    </div>
+    <div id="bagEmpty" class="small text-secondary text-center py-3 px-3">
+      Files aren&rsquo;t stored here &mdash; just pointers. Stash files you want to collect
+      and pull them somewhere else with a copy or move.
+    </div>
+    <div id="bagList"></div>
+    <div class="bag-foot">
+      <select id="bagMode" class="form-select form-select-sm">
+        <option value="copy">Copy into current folder</option>
+        <option value="move">Move into current folder</option>
+      </select>
+      <button id="bagPull" class="btn btn-sm btn-primary w-100">Pull all into current folder</button>
+    </div>
   </div>
 </div>
 

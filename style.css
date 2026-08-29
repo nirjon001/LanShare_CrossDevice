@@ -312,6 +312,72 @@ body {
   background: rgba(56, 189, 248, 0.10);
 }
 
+/* ===== the Bag (no-copy pointer panel) ===== */
+.bag-panel {
+  position: fixed;
+  top: 56px;
+  right: 12px;
+  width: min(360px, 92vw);
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  background: #101a30;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  z-index: 1050;
+  overflow: hidden;
+}
+.bag-panel.dragover {
+  border-color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.10);
+}
+.bag-head {
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+.bag-list {
+  overflow-y: auto;
+  padding: 0.3rem;
+}
+.bag-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.bag-row:hover {
+  background: rgba(56, 189, 248, 0.08);
+}
+.bag-row .t-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bag-row .b-size {
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.bag-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem 0.9rem;
+  border-top: 1px solid var(--border);
+}
+
+.folder-row.dragover {
+  box-shadow: inset 0 0 0 1px #7dd3fc;
+  background: rgba(56, 189, 248, 0.08);
+}
+
 /* phones: sidebar becomes bottom tab bar */
 @media (max-width: 767px) {
   .app-shell {

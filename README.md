@@ -16,6 +16,8 @@ to upload into the folder you're looking at.
 - **Zip a folder** on demand and download it as a single .zip — background job with a live progress
   bar (counting → zipping → downloading)
 - **Search** any drive live as you type (capped/depth-limited walk, so big drives stay responsive)
+- **The Bag** — stash files as zero-copy pointers (the 💼 button or dragging a row onto the Bag), then
+  pull them into any folder as a copy or a move; survives restarts via `bag.json`
 - **Paste a Windows path** into the address bar (`G:\Downloads\songs`) and jump straight there
 - **Drive capacities** — each drive card shows its total and free space
 - **Upload** files into whatever folder you're currently viewing (drag & drop or tap the box)
@@ -83,6 +85,9 @@ Detected drives are always available. To serve extra paths, or lock one down, ad
 | `GET /zip/download/{job_id}` | download the finished zip (one-shot) |
 | `POST /upload?root=&path=` | upload one or more files into that folder |
 | `POST /files/{share}/{subpath:path}/delete` | delete a file (file-only by design) |
+| `GET /api/bag` · `POST /api/bag/add` · `/remove` | the Bag: list / stash / drop no-copy pointers |
+| `POST /api/bag/pull` | materialise Bag items into a folder (copy or move) |
+| `POST /api/bag/clear` | empty the Bag |
 
 ## Safety
 
@@ -104,6 +109,6 @@ Detected drives are always available. To serve extra paths, or lock one down, ad
 
 ## Learning progress
 
-This repo `LEARN.md` is a concept-by-concept map of the whole app (47 ideas, each with a 2–5 minute
+This repo `LEARN.md` is a concept-by-concept map of the whole app (49 ideas, each with a 2–5 minute
 "do it yourself" task) plus a 40-minute interview rebuild drill. One page a day — the goal is to be
 able to rewrite this app from scratch, not to read about it.

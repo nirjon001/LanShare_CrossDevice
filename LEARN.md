@@ -9,7 +9,7 @@ Each section is ONE idea. For every idea there is:
   the name.
 - **Do it yourself** — a 2-5 minute task. Do these until the answer comes without thinking.
 
-The whole app = ~47 ideas. One page a day = a month to real ownership.
+The whole app = ~49 ideas. One page a day = a month to real ownership.
 
 ## The 20-minute rule
 
@@ -64,7 +64,7 @@ Never move to the next section with an unchecked gap — gaps compound.
 - **What it is**: `@app.get("/path")` says "when someone GETs this URL, call this function".
 - **Find it**: `lanShare.py → index()`, `login()`, `api_drives()`, `api_list()`, `api_search()`,
   `upload()`, `download()`, `download_head()`, `zip_start()`, `zip_status()`, `zip_download()`,
-  `delete()`
+  `delete()`, `bag_list()`, `bag_add()`, `bag_remove()`, `bag_pull()`, `bag_clear()`
 - **Do it**: add `@app.get("/ping")` returning `{"pong": True}`; visit `/ping`. (Now add auth to it —
   see idea 15.)
 
@@ -355,6 +355,30 @@ Never move to the next section with an unchecked gap — gaps compound.
 
 ---
 
+## Group J — the Bag (M2)
+
+### 48. The Bag — no-copy pointers
+- **What it is**: a file row's 💼 button (or dragging the row onto the Bag panel) stores only a
+  **pointer** — `{id, share, path, name, size, added}` — into a `bag.json` list. Zero bytes are
+  copied. The bag endures restarts, dedupes by share+path, shows a "gone" badge when a stashed file
+  has vanished, and clicking a row jumps you to the folder that holds it.
+- **Find it**: `lanShare.py → BagStore`, `bag_list()`, `bag_add()`; `lanshare.js → handleStash()`,
+  `refreshBag()`, `renderBagRows()`, the `BAG_MIME` drag protocol
+- **Do it**: stash the same file twice — the second response has `"already": true`. Delete the real
+  file, reopen the Bag, and watch the red "gone" badge.
+
+### 49. Pulling from the Bag — copy vs move
+- **What it is**: "Pull into current folder" (or dropping a bag row onto any folder row / drive card)
+  materialises the pointers. `copy` writes the files and keeps the bag entries; `move` writes them,
+  then drops the entries, leaving exactly one copy on disk. Name clashes auto-rename
+  (`name_1.ext`), and an entry whose source vanished is reported as `failed` rather than crashing.
+- **Find it**: `lanShare.py → bag_pull()` (`shutil.copy2` / `shutil.move`, `unique_path`);
+  `lanshare.js → pullBag()`, `bagDropPull()`, `announceBagPull()`
+- **Do it**: move a stashed file into the folder it already lives in — watch `unique_path` mint a
+  `_1` twin instead of overwriting.
+
+---
+
 ## The interview rebuild drill
 
 Take `lanShare.py` (the server) and write it from an empty file in under 40 minutes with ONLY this checklist:
@@ -370,10 +394,12 @@ Take `lanShare.py` (the server) and write it from an empty file in under 40 minu
 9. `POST /zip/{share}/{subpath:path}/start` + `GET /zip/status/{id}` + `GET /zip/download/{id}`
 10. `POST /files/{share}/{subpath:path}/delete`
 11. the `safe_rel` traversal guard used by every filesystem route
-12. startup panel (rich) + QR + uvicorn
+12. the Bag: `GET /api/bag`, `POST /api/bag/add` · `/api/bag/remove` · `/api/bag/pull` · `/api/bag/clear`
+13. startup panel (rich) + QR + uvicorn
 
 Then do the same for `lanshare.js`: `loadDrives`, `openDrive`, `loadListing` + breadcrumb render,
 folder navigation (state machine), live search (debounce + sequence guard), go-to-path (`findShareForPath`),
 zip job polling with a two-phase progress bar, XHR progress uploads, blob download + native fallback,
-and the 401 guard. If a step stalls longer than 20 minutes, stop, look it up, and do it from memory
-the next day. Repeat weekly.
+the Bag (stash button, row drag via `BAG_MIME`, pull copy/move into the current folder), and the
+401 guard. If a step stalls longer than 20 minutes, stop, look it up, and do it from memory the next
+day. Repeat weekly.

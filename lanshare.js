@@ -53,6 +53,16 @@ const searchPanel = document.getElementById("searchPanel");
 const transferList = document.getElementById("transferList");
 const clearTransfers = document.getElementById("clearTransfers");
 const installBtn = document.getElementById("installBtn");
+const bagToggle = document.getElementById("bagToggle");
+const bagCount = document.getElementById("bagCount");
+const bagPanel = document.getElementById("bagPanel");
+const bagList = document.getElementById("bagList");
+const bagEmpty = document.getElementById("bagEmpty");
+const bagMode = document.getElementById("bagMode");
+const bagPullBtn = document.getElementById("bagPull");
+const bagClear = document.getElementById("bagClear");
+const bagClose = document.getElementById("bagClose");
+const BAG_MIME = "application/x-lanshare-bag";
 
 let inFlight = 0;
 let current = { root: null, path: "", rootName: "" };
@@ -60,6 +70,7 @@ let writable = true;
 let drivesCache = null;
 let searchTimer = null;
 let searchSeq = 0;
+let bagCache = [];
 
 function getTransferEmpty() {
   return document.getElementById("transferEmpty");
@@ -197,6 +208,13 @@ async function loadDrives() {
       card.addEventListener("drop", (e) => {
         e.preventDefault();
         card.classList.remove("dragover");
+        const dropped = e.dataTransfer && e.dataTransfer.getData(BAG_MIME);
+        if (dropped) {
+          let d2;
+          try { d2 = JSON.parse(dropped); } catch (err) { return; }
+          if (d2 && d2.id) bagDropPull(d2.id, d.id, "");
+          return;
+        }
         if (e.dataTransfer && e.dataTransfer.files.length) {
           uploadFiles(e.dataTransfer.files, d.id, "");
         }
@@ -357,6 +375,13 @@ async function loadListing() {
       dl.textContent = "Download";
       tdAct.appendChild(dl);
 
+      const stash = document.createElement("button");
+      stash.className = "btn btn-sm btn-outline-warning";
+      stash.dataset.stash = rel;
+      stash.title = "Stash in Bag (no copy yet)";
+      stash.textContent = "💼";
+      tdAct.appendChild(stash);
+
       const del = document.createElement("button");
       del.className = "btn btn-sm btn-outline-danger";
       del.dataset.del = rel;
@@ -368,6 +393,26 @@ async function loadListing() {
 
     if (item.dir && !item.locked) {
       tr.addEventListener("dblclick", () => openFolder(item.name));
+      tr.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        tr.classList.add("dragover");
+      });
+      tr.addEventListener("dragleave", () => tr.classList.remove("dragover"));
+      tr.addEventListener("drop", (e) => {
+        e.preventDefault();
+        tr.classList.remove("dragover");
+        const dropped = e.dataTransfer && e.dataTransfer.getData(BAG_MIME);
+        if (!dropped) return;
+        let d;
+        try { d = JSON.parse(dropped); } catch (err) { return; }
+        if (d && d.id) bagDropPull(d.id, current.root, joinPath(current.path, item.name));
+      });
+    } else {
+      tr.draggable = true;
+      tr.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData(BAG_MIME, JSON.stringify({ share: current.root, path: rel }));
+        e.dataTransfer.effectAllowed = "copy";
+      });
     }
     tbody.appendChild(tr);
   }
@@ -706,6 +751,12 @@ tbody.addEventListener("click", async (e) => {
     return;
   }
 
+  const stash = e.target.closest("[data-stash]");
+  if (stash) {
+    handleStash(stash.dataset.stash);
+    return;
+  }
+
   const del = e.target.closest("[data-del]");
   if (del) {
     const rel = del.dataset.del;
@@ -925,6 +976,230 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     beginPathEdit();
   }
+});
+
+/* ---------- the Bag (no-copy pointer panel) ---------- */
+
+function bagOpen() {
+  bagPanel.classList.remove("d-none");
+  refreshBag();
+}
+
+function bagClosePanel() {
+  bagPanel.classList.add("d-none");
+}
+
+bagToggle.addEventListener("click", bagOpen);
+bagClose.addEventListener("click", bagClosePanel);
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !bagPanel.classList.contains("d-none")) {
+    bagClosePanel();
+  }
+});
+
+async function handleStash(rel) {
+  const name = rel.split("/").pop();
+  const u = addTransferRow(name + " → Bag", null);
+  u.status.className = "badge text-bg-warning";
+  u.status.textContent = "Stashing";
+  try {
+    const res = await fetch("/api/bag/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ share: current.root, path: rel }),
+    });
+    if (res.status === 401) {
+      location.href = "/";
+      return;
+    }
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      const already = data.already || data.item;
+      u.status.className = "badge text-bg-success";
+      u.status.textContent = already ? "Already in Bag" : "In Bag";
+      u.bar.classList.remove("progress-bar-animated", "progress-bar-striped");
+      u.bar.style.width = "100%";
+      u.pct.textContent = "";
+      refreshBag();
+    } else {
+      u.status.className = "badge text-bg-danger";
+      u.status.textContent = data.error || "Failed";
+      u.bar.classList.remove("progress-bar-animated", "progress-bar-striped");
+    }
+  } catch (err) {
+    u.status.className = "badge text-bg-danger";
+    u.status.textContent = "Failed";
+  }
+}
+
+bagPanel.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  bagPanel.classList.add("dragover");
+});
+bagPanel.addEventListener("dragleave", () => bagPanel.classList.remove("dragover"));
+bagPanel.addEventListener("drop", (e) => {
+  e.preventDefault();
+  bagPanel.classList.remove("dragover");
+  const dropped = e.dataTransfer && e.dataTransfer.getData(BAG_MIME);
+  if (!dropped) return;
+  let d;
+  try { d = JSON.parse(dropped); } catch (err) { return; }
+  if (d && d.share && d.path) handleStash(d.path);
+});
+
+async function refreshBag() {
+  let res;
+  try {
+    res = await fetch("/api/bag");
+  } catch (e) {
+    return;
+  }
+  if (res.status === 401) {
+    location.href = "/";
+    return;
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    return;
+  }
+  bagCache = (data && Array.isArray(data.items)) ? data.items : [];
+  bagCount.textContent = bagCache.length;
+  renderBagRows();
+}
+
+function renderBagRows() {
+  bagList.innerHTML = "";
+  bagEmpty.hidden = bagCache.length !== 0;
+  bagPullBtn.disabled = bagCache.length === 0 || !current.root;
+
+  for (const item of bagCache) {
+    const row = document.createElement("div");
+    row.className = "bag-row";
+    row.draggable = true;
+    row.dataset.id = item.id;
+
+    const ico = document.createElement("span");
+    ico.textContent = "📄";
+
+    const nm = document.createElement("span");
+    nm.className = "t-name";
+    nm.textContent = item.name;
+    nm.title = (item.path || "") + " on " + item.share;
+
+    const sz = document.createElement("span");
+    sz.className = "b-size";
+    if (item.missing) {
+      sz.className = "badge text-bg-danger b-size";
+      sz.textContent = "gone";
+    } else {
+      sz.textContent = formatSize(item.size);
+    }
+
+    const rm = document.createElement("button");
+    rm.className = "btn btn-sm btn-link text-secondary p-0 ps-1";
+    rm.title = "Remove from Bag";
+    rm.textContent = "✕";
+    rm.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      bagRemove([item.id]);
+    });
+
+    row.append(ico, nm, sz, rm);
+
+    row.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData(BAG_MIME, JSON.stringify({ id: item.id }));
+      e.dataTransfer.effectAllowed = "copy";
+    });
+
+    row.addEventListener("click", () => {
+      const segs = segments(item.path || "");
+      segs.pop();
+      current.root = item.share;
+      current.path = segs.join("/");
+      const d = Array.isArray(drivesCache)
+        ? drivesCache.find((x) => x.id === item.share)
+        : null;
+      current.rootName = d ? d.name : item.share;
+      writable = d ? d.writable : true;
+      if (viewFiles.hidden) showView("files");
+      loadListing();
+      bagClosePanel();
+    });
+
+    bagList.appendChild(row);
+  }
+}
+
+async function bagRemove(ids) {
+  try {
+    const res = await fetch("/api/bag/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    if (res.status === 401) {
+      location.href = "/";
+      return;
+    }
+  } catch (e) {}
+  refreshBag();
+}
+
+bagClear.addEventListener("click", () => {
+  if (bagCache.length && !confirm("Remove all " + bagCache.length + " items from the Bag?")) return;
+  bagRemove(bagCache.map((i) => i.id));
+});
+
+async function pullBag(ids, mode, destRoot, destPath) {
+  if (!destRoot) return null;
+  let res;
+  try {
+    res = await fetch("/api/bag/pull", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, mode, dest_root: destRoot, dest_path: destPath }),
+    });
+  } catch (e) {
+    return null;
+  }
+  if (res.status === 401) {
+    location.href = "/";
+    return null;
+  }
+  return res.json().catch(() => null);
+}
+
+function announceBagPull(data, mode) {
+  const ok = (data && Array.isArray(data.done)) ? data.done : [];
+  const fail = (data && Array.isArray(data.failed)) ? data.failed : [];
+  for (const o of ok) {
+    addHistoryRow(o.name, mode === "move" ? "moved from Bag" : "pulled from Bag", "success");
+  }
+  if (fail.length) {
+    alert("Pull finished with " + fail.length + " problem(s):\n" +
+      fail.slice(0, 5).map((f) => f.name + " — " + f.error).join("\n"));
+  }
+}
+
+async function bagDropPull(id, destRoot, destPath) {
+  const data = await pullBag([id], "copy", destRoot, destPath);
+  if (!data) return;
+  announceBagPull(data, "copy");
+  refreshBag();
+  if (!appView.hidden) loadListing();
+}
+
+bagPullBtn.addEventListener("click", async () => {
+  if (!bagCache.length || !current.root) return;
+  const mode = bagMode.value;
+  const data = await pullBag(bagCache.map((i) => i.id), mode, current.root, current.path);
+  if (!data) return;
+  announceBagPull(data, mode);
+  refreshBag();
+  loadListing();
 });
 
 /* ---------- PWA ---------- */
