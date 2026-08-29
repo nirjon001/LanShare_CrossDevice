@@ -1,0 +1,9 @@
+{
+  "shares": [
+    {
+      "id": "lanshare",
+      "name": "LAN Share",
+      "path": "G:/lan share"
+    }
+  ]
+}

@@ -42,6 +42,8 @@ const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("fileInput");
 const transferList = document.getElementById("transferList");
 const clearTransfers = document.getElementById("clearTransfers");
+const shareNameChip = document.getElementById("shareNameChip");
+const installBtn = document.getElementById("installBtn");
 
 let inFlight = 0;
 
@@ -76,7 +78,13 @@ async function loadFiles() {
     location.href = "/";
     return;
   }
-  const files = await res.json();
+  let files;
+  try {
+    files = await res.json();
+  } catch (e) {
+    return;
+  }
+  if (!Array.isArray(files)) return;
 
   document.getElementById("fileCount").textContent =
     files.length + " file" + (files.length === 1 ? "" : "s");
@@ -138,6 +146,111 @@ async function loadFiles() {
     tr.appendChild(tdAct);
     tbody.appendChild(tr);
   }
+}
+
+/* ---------- views / sidebar ---------- */
+
+const viewTransfer = document.getElementById("view-transfer");
+const viewDrives = document.getElementById("view-drives");
+
+document.querySelectorAll(".side-item").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".side-item").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    const view = btn.dataset.view;
+    viewTransfer.hidden = view !== "transfer";
+    viewDrives.hidden = view !== "drives";
+    if (view === "drives") loadShares();
+    if (view === "transfer") loadFiles();
+  });
+});
+
+/* ---------- drives ---------- */
+
+async function loadShares() {
+  const list = document.getElementById("drivesList");
+  let res;
+  try {
+    res = await fetch("/api/shares");
+  } catch (e) {
+    list.innerHTML = '<div class="text-danger text-center py-3 small">Could not reach server.</div>';
+    return;
+  }
+  if (res.status === 401) {
+    location.href = "/";
+    return;
+  }
+  const shares = await res.json();
+  if (!Array.isArray(shares)) return;
+
+  list.innerHTML = "";
+  if (shares.length === 0) {
+    list.innerHTML = '<div class="text-secondary text-center py-3 small">No shares configured.</div>';
+    return;
+  }
+
+  for (const s of shares) {
+    const card = document.createElement("div");
+    card.className = "drive-card";
+
+    const ico = document.createElement("span");
+    ico.className = "drive-ico";
+    ico.textContent = "💾";
+
+    const body = document.createElement("div");
+    body.style.minWidth = "0";
+    const name = document.createElement("div");
+    name.className = "drive-name";
+    name.textContent = s.name + (s.selected ? " (active)" : "");
+    const path = document.createElement("div");
+    path.className = "drive-path";
+    path.textContent = s.path;
+    body.append(name, path);
+
+    card.append(ico, body);
+
+    if (s.selected) {
+      const chip = document.createElement("span");
+      chip.className = "badge text-bg-success drive-status";
+      chip.textContent = "Active";
+      card.append(chip);
+    } else if (!s.online) {
+      const chip = document.createElement("span");
+      chip.className = "badge text-bg-secondary drive-status";
+      chip.textContent = "Offline";
+      card.append(chip);
+    } else {
+      const btn = document.createElement("button");
+      btn.className = "btn btn-sm btn-outline-info";
+      btn.textContent = "Switch";
+      btn.addEventListener("click", () => switchShare(s.id));
+      card.append(btn);
+    }
+
+    list.appendChild(card);
+  }
+}
+
+async function switchShare(id) {
+  const res = await fetch("/api/share", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+  if (res.status === 401) {
+    location.href = "/";
+    return;
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    alert("Switch failed: " + (data.error || res.status));
+    return;
+  }
+  const shares = await (await fetch("/api/shares")).json();
+  const sel = shares.find((s) => s.selected);
+  if (sel) shareNameChip.textContent = sel.name;
+  loadShares();
+  document.querySelector('.side-item[data-view="transfer"]').click();
 }
 
 /* ---------- transfer history ---------- */
@@ -240,7 +353,11 @@ function uploadFiles(files) {
         location.href = "/";
         return;
       } else {
-        setStatus(u, "Failed", "danger");
+        let msg = "Failed";
+        try {
+          msg = JSON.parse(xhr.responseText).error || msg;
+        } catch (e) {}
+        setStatus(u, msg, "danger");
       }
       if (inFlight === 0) setTimeout(loadFiles, 500);
     };
@@ -324,7 +441,7 @@ fileInput.addEventListener("change", () => {
   fileInput.value = "";
 });
 
-/* ---------- table actions: download log + delete ---------- */
+/* ---------- table actions: download + delete ---------- */
 
 tbody.addEventListener("click", async (e) => {
   const dl = e.target.closest("[data-dl]");
@@ -337,18 +454,26 @@ tbody.addEventListener("click", async (e) => {
   if (del) {
     const name = del.dataset.del;
     if (!confirm(`Delete "${name}"?`)) return;
-    const res = await fetch("/files/" + encodeURIComponent(name) + "/delete", {
-      method: "POST",
-    });
-    if (res.status === 401) {
-      location.href = "/";
-      return;
-    }
-    if (res.ok) {
-      addHistoryRow(name, "deleted", "danger");
-if (!appView.hidden) loadFiles();
-    } else {
-      alert("Delete failed.");
+    del.disabled = true;
+    try {
+      const res = await fetch("/files/" + encodeURIComponent(name) + "/delete", {
+        method: "POST",
+      });
+      if (res.status === 401) {
+        location.href = "/";
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        addHistoryRow(name, "deleted", "danger");
+        if (!appView.hidden) loadFiles();
+      } else {
+        alert("Delete failed: " + (data.error || res.status));
+      }
+    } catch (err) {
+      alert("Delete failed: " + err.message);
+    } finally {
+      del.disabled = false;
     }
   }
 });
@@ -358,4 +483,30 @@ clearTransfers.addEventListener("click", () => {
   showTransferEmpty();
 });
 
-loadFiles();
+/* ---------- PWA: install + service worker ---------- */
+
+let deferredInstall = null;
+
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  deferredInstall = e;
+  installBtn.classList.remove("d-none");
+});
+
+installBtn.addEventListener("click", async () => {
+  if (!deferredInstall) return;
+  deferredInstall.prompt();
+  const choice = await deferredInstall.userChoice;
+  deferredInstall = null;
+  if (choice.outcome === "accepted") installBtn.classList.add("d-none");
+});
+
+window.addEventListener("appinstalled", () => {
+  installBtn.classList.add("d-none");
+});
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
+
+if (!appView.hidden) loadFiles();
