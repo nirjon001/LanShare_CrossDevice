@@ -19,9 +19,11 @@ to upload into the folder you're looking at.
 - **The Bag** — stash files, whole folders, or a just-built zip as zero-copy pointers (the 💼 button or
   dragging a row onto the Bag), then pull them into any folder as a copy or a move; survives restarts
   via `bag.json`
-- **Multi-device** — run one instance as a **hub**; other devices register to it and appear as chips
-  in the Drives view. Pick a chip to browse/search/upload/zip/stash that device through the hub (same
-  PIN everywhere, no per-device setup)
+- **Multi-device** — run one instance as a **hub**; other devices register to it and appear on a live
+  **radar** in the Drives view (a rotating sonar sweep, dots pulsing green when online). Pick a dot to
+  browse/search/upload/zip/stash that device through the hub (same PIN everywhere). No hub needed for
+  the basics: instances announce themselves over UDP, so devices on the same network pop up on each
+  other's radar automatically.
 - **Paste a Windows path** into the address bar (`G:\Downloads\songs`) and jump straight there
 - **Recent files** — each device shows the files recently opened in Windows on it (the OS Recent
   list), and other devices can see them through the hub and grab them with Download or the 💼 Bag:
@@ -93,6 +95,9 @@ variables — no config file for peers:
 | `LANSHARE_ADVERTISE_URL` | URL peers should use to reach this device (default: guessed LAN IP) |
 | `LANSHARE_TOKEN` | shared machine token (default: derived from the PIN) |
 | `LANSHARE_SHARES` | point at an alternate `shares.json` for this instance |
+| `LANSHARE_DISCOVERY` | set `0` to disable zero-config LAN discovery (default: on) |
+| `LANSHARE_DISCOVERY_GROUP` / `LANSHARE_DISCOVERY_PORT` | multicast address (default `239.255.43.21:41337`) |
+| `LANSHARE_DISCOVERY_PEERS` | extra `host:port` unicast announce targets (comma-separated) |
 
 Everyone must share the same PIN (or set `LANSHARE_TOKEN` for devices you can't type a PIN on).
 Start the hub normally; start the other devices with:
@@ -101,7 +106,10 @@ Start the hub normally; start the other devices with:
 LANSHARE_HUB_URL=http://192.168.1.5:8000 LANSHARE_PORT=8010 LANSHARE_DEVICE_NAME=Room1 python lanShare.py
 ```
 
-The hub console prints `device registered`, and the peer bar shows the device with an online dot.
+The hub console prints `device registered`, and the radar shows the device with a pulsing green dot.
+No hub? Instances also announce themselves over UDP, so two devices on the same network appear on each
+other's radar (a sonar with a rotating sweep) with zero configuration — click a dot to browse and send
+files to that device.
 
 ## Routes (for reference)
 
@@ -112,6 +120,8 @@ The hub console prints `device registered`, and the peer bar shows the device wi
 | `GET /api/list?root=&path=` | folders/files in one directory (dirs first) |
 | `GET /api/search?root=&path=&q=&limit=&depth=` | live recursive name search (capped/depth-limited) |
 | `GET /api/recent` · `GET /api/recent/file?path=` | recently opened files on this device (resolves .lnk) |
+| `GET /api/peers` | devices on the LAN (registry + UDP discovery) |
+| `POST /api/device/register` · `/api/device/heartbeat` | hub registration + keep-alive |
 | `GET`/`HEAD /files/{share}/{subpath:path}` | download a file |
 | `POST /zip/{share}/{subpath:path}/start` | start a background zip job |
 | `GET /zip/status/{job_id}` | poll the zip job (bytes zipped / total) |
@@ -148,6 +158,6 @@ The hub console prints `device registered`, and the peer bar shows the device wi
 
 ## Learning progress
 
-This repo `LEARN.md` is a concept-by-concept map of the whole app (57 ideas, each with a 2–5 minute
+This repo `LEARN.md` is a concept-by-concept map of the whole app (59 ideas, each with a 2–5 minute
 "do it yourself" task) plus a 40-minute interview rebuild drill. One page a day — the goal is to be
 able to rewrite this app from scratch, not to read about it.

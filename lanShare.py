@@ -44,6 +44,11 @@ DEVICE_NAME = os.getenv("LANSHARE_DEVICE_NAME") or socket.gethostname().split(".
 ADVERTISE_URL = (os.getenv("LANSHARE_ADVERTISE_URL") or "").rstrip("/")
 PEER_TIMEOUT = 12.0
 
+DISCOVERY_ENABLED = (os.getenv("LANSHARE_DISCOVERY") or "1").strip().lower() not in ("0", "false", "no")
+DISCOVERY_GROUP = os.getenv("LANSHARE_DISCOVERY_GROUP") or "239.255.43.21"
+DISCOVERY_PORT = int(os.getenv("LANSHARE_DISCOVERY_PORT") or 41337)
+DISCOVERY_PEERS = [p.strip() for p in (os.getenv("LANSHARE_DISCOVERY_PEERS") or "").split(",") if p.strip()]
+
 SKIP_SEARCH = {"system volume information", "$recycle.bin", "windows.old"}
 ZIP_JOBS = {}
 BAG_FILE = BASE_DIR / "bag.json"
@@ -368,6 +373,85 @@ BAG = BagStore()
 
 PEER_LOCK = threading.Lock()
 
+DISCOVERED = {}
+DISCOVERED_LOCK = threading.Lock()
+
+
+def _discovery_announce_payload():
+    return json.dumps({
+        "id": DEVICE_ID,
+        "name": DEVICE_NAME or socket.gethostname().split(".")[0],
+        "url": ADVERTISE_URL or f"http://{get_lan_ip()}:{PORT}",
+    }).encode("utf-8")
+
+
+def _ingest_discovery(data):
+    try:
+        d = json.loads(data.decode("utf-8", "ignore"))
+    except Exception:
+        return
+    pid = str(d.get("id") or "").strip()
+    if not pid or pid == DEVICE_ID or not re.fullmatch(r"[A-Za-z0-9_-]+", pid):
+        return
+    url = str(d.get("url") or "").strip()
+    if not url.startswith("http://") and not url.startswith("https://"):
+        return
+    name = str(d.get("name") or pid)[:40].strip() or pid
+    with DISCOVERED_LOCK:
+        DISCOVERED[pid] = {"id": pid, "name": name, "url": url, "last_seen": time.time()}
+
+
+def _discovery_loop():
+    payload = _discovery_announce_payload()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    except OSError:
+        pass
+    try:
+        sock.bind(("", DISCOVERY_PORT))
+    except OSError:
+        try:
+            sock.close()
+        except OSError:
+            pass
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 3)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+        sock.setsockopt(
+            socket.IPPROTO_IP,
+            socket.IP_ADD_MEMBERSHIP,
+            socket.inet_aton(DISCOVERY_GROUP) + socket.inet_aton("0.0.0.0"),
+        )
+    except OSError:
+        pass
+    console.print(
+        f"[cyan]LAN discovery[/cyan] on [green]{DISCOVERY_GROUP}:{DISCOVERY_PORT}[/green]"
+        + (f", unicast peers: {', '.join(DISCOVERY_PEERS)}" if DISCOVERY_PEERS else "")
+    )
+    while True:
+        try:
+            sock.sendto(payload, (DISCOVERY_GROUP, DISCOVERY_PORT))
+        except OSError:
+            pass
+        for peer in DISCOVERY_PEERS:
+            host, _, port = peer.rpartition(":")
+            try:
+                sock.sendto(payload, (host, int(port)))
+            except (OSError, ValueError):
+                pass
+        deadline = time.time() + 5
+        while True:
+            sock.settimeout(max(0.05, deadline - time.time()))
+            try:
+                data, _ = sock.recvfrom(4096)
+            except socket.timeout:
+                break
+            except OSError:
+                break
+            _ingest_discovery(data)
+
 
 def _load_peers():
     try:
@@ -387,6 +471,10 @@ def find_peer(pid):
     for p in _load_peers():
         if p.get("id") == pid:
             return p
+    with DISCOVERED_LOCK:
+        d = DISCOVERED.get(pid)
+        if d:
+            return {"id": d["id"], "name": d["name"], "url": d["url"]}
     return None
 
 
@@ -400,8 +488,18 @@ async def api_peers(request: Request):
     if not is_authed(request):
         return JSONResponse({"error": "auth"}, status_code=401)
     now = time.time()
-    out = []
+    by_id = {}
     for e in _load_peers():
+        by_id.setdefault(e.get("id"), {}).update(e)
+    with DISCOVERED_LOCK:
+        for pid, e in DISCOVERED.items():
+            entry = by_id.setdefault(pid, {})
+            entry.setdefault("id", pid)
+            entry.setdefault("name", e["name"])
+            entry.setdefault("url", e["url"])
+            entry["last_seen"] = max(entry.get("last_seen", 0), e["last_seen"])
+    out = []
+    for e in by_id.values():
         out.append({
             "id": e.get("id"),
             "name": e.get("name"),
@@ -1084,6 +1182,8 @@ def main():
     if HUB_URL:
         threading.Thread(target=_peer_registration_loop, daemon=True).start()
         console.print(f"[cyan]registering to hub[/cyan] {HUB_URL} as [green]{DEVICE_NAME}[/green]")
+    if DISCOVERY_ENABLED:
+        threading.Thread(target=_discovery_loop, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=PORT)
 
 

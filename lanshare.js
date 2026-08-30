@@ -75,6 +75,8 @@ let bagCache = [];
 let peerState = null;
 let recentTimer = null;
 let recentBusy = false;
+let peerTimer = null;
+let autoOpened = false;
 
 function peerPrefix() {
   return peerState ? "/peer/" + encodeURIComponent(peerState.id) : "";
@@ -138,8 +140,34 @@ function showView(name) {
   viewDrives.hidden = name !== "drives";
   viewRecent.hidden = name !== "recent";
   if (name !== "recent") { window.clearInterval(recentTimer); recentTimer = null; }
-  if (name === "drives") loadDrives();
+  if (name === "drives") {
+    loadDrives();
+    if (!peerTimer) peerTimer = window.setInterval(loadPeers, 5000);
+  } else {
+    if (peerTimer) { window.clearInterval(peerTimer); peerTimer = null; }
+  }
+  if (name === "files") {
+    if (!current.root) {
+      dropzoneLabel.textContent = "Open a drive first to send files here";
+      autoOpenFirstDrive();
+    }
+  }
   if (name === "recent") openRecent();
+}
+
+async function autoOpenFirstDrive() {
+  if (autoOpened || current.root) return;
+  autoOpened = true;
+  if (!drivesCache) {
+    try {
+      const res = await fetch(peerPrefix() + "/api/drives");
+      if (res.status === 401) { location.href = "/"; return; }
+      drivesCache = await res.json();
+    } catch (e) { return; }
+  }
+  if (!Array.isArray(drivesCache) || !drivesCache.length) return;
+  const d = drivesCache.find((x) => x.online) || drivesCache[0];
+  if (d) openDrive(d);
 }
 
 document.querySelectorAll(".side-item").forEach((btn) =>
@@ -292,33 +320,68 @@ async function loadPeers() {
     return;
   }
   const devices = (data && Array.isArray(data.devices)) ? data.devices : [];
-  const chips = [];
-  const me = document.createElement("button");
-  me.className = "btn btn-sm peer-chip" + (peerState ? " btn-outline-secondary" : " btn-info");
-  me.textContent = "This device";
-  me.addEventListener("click", () => {
+  const n = devices.length;
+
+  bar.innerHTML = "";
+  const radar = document.createElement("div");
+  radar.className = "peer-radar";
+  const sweep = document.createElement("div");
+  sweep.className = "radar-sweep";
+  const dots = document.createElement("div");
+  dots.className = "radar-dots";
+  radar.append(sweep, dots);
+
+  const center = document.createElement("button");
+  center.className = "blip blip-self";
+  center.title = peerState ? "Click to switch back to this device" : "This device";
+  const cCore = document.createElement("span");
+  cCore.className = "blip-core";
+  cCore.textContent = "●";
+  const cName = document.createElement("span");
+  cName.className = "blip-name";
+  cName.textContent = "You";
+  center.append(cCore, cName);
+  center.addEventListener("click", () => {
     if (peerState) {
       peerState = null;
       loadDrives();
     }
   });
-  chips.push(me);
-  for (const d of devices) {
-    const b = document.createElement("button");
+  dots.appendChild(center);
+
+  for (let i = 0; i < devices.length; i++) {
+    const d = devices[i];
+    const ang = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(n, 1);
     const active = peerState && peerState.id === d.id;
-    b.className = "btn btn-sm peer-chip" + (active ? " btn-info" : " btn-outline-secondary");
-    b.textContent = (d.online ? "● " : "○ ") + d.name;
+    const b = document.createElement("button");
+    b.className = "blip" + (d.online ? " blip-online" : " blip-off") + (active ? " blip-active" : "");
+    b.style.left = (50 + 42 * Math.cos(ang)) + "%";
+    b.style.top = (50 + 42 * Math.sin(ang)) + "%";
     b.title = d.url;
-    b.addEventListener("click", () => {
-      if (!active) {
+    const core = document.createElement("span");
+    core.className = "blip-core";
+    core.textContent = d.online ? "●" : "○";
+    const nm = document.createElement("span");
+    nm.className = "blip-name";
+    nm.textContent = d.name;
+    b.append(core, nm);
+    if (d.online && !active) {
+      b.addEventListener("click", () => {
         peerState = { id: d.id, name: d.name };
         loadDrives();
-      }
-    });
-    chips.push(b);
+      });
+    }
+    dots.appendChild(b);
   }
-  bar.innerHTML = "";
-  for (const c of chips) bar.appendChild(c);
+
+  const note = document.createElement("div");
+  note.className = "radar-note";
+  note.textContent = n === 0
+    ? "No other device on your network yet - run this app on another PC or phone and it appears here automatically."
+    : n + " device" + (n === 1 ? "" : "s") + " on the LAN · click one to browse and send files to it";
+  radar.appendChild(note);
+
+  bar.appendChild(radar);
 }
 
 /* ---------- listing ---------- */
@@ -393,7 +456,8 @@ async function loadListing() {
     data.dirs.length + " folder" + (data.dirs.length === 1 ? "" : "s") + ", " +
     data.files.length + " file" + (data.files.length === 1 ? "" : "s");
 
-  dropzoneLabel.textContent = "Send to " +
+  const target = peerState ? peerState.name : "this device";
+  dropzoneLabel.textContent = "Send to " + target + " · " +
     (current.rootName + "/" + current.path).replace(/\/+$/, "");
 
   tbody.innerHTML = "";
@@ -684,7 +748,7 @@ function downloadRecent(name, size, url) {
     location.href = url;
     return;
   }
-  const u = addTransferRow(name, Number(size) || 0);
+  const u = addTransferRow(name, Number(size) || 0, "from " + (peerState ? peerState.name : "this device"));
   u.status.className = "badge text-bg-info";
   u.status.textContent = "Downloading";
   const xhr = new XMLHttpRequest();
@@ -736,7 +800,7 @@ function addHistoryRow(name, note, kind) {
   transferList.prepend(row);
 }
 
-function addTransferRow(name, size) {
+function addTransferRow(name, size, target) {
   hideTransferEmpty();
   const row = document.createElement("div");
   row.className = "transfer-row";
@@ -749,6 +813,14 @@ function addTransferRow(name, size) {
   const sizeEl = document.createElement("span");
   sizeEl.className = "t-size text-secondary";
   sizeEl.textContent = size == null ? "—" : formatSize(size);
+
+  if (target) {
+    const tBadge = document.createElement("span");
+    tBadge.className = "badge text-bg-info t-target";
+    tBadge.textContent = target;
+    tBadge.title = target;
+    row.append(tBadge);
+  }
 
   const prog = document.createElement("div");
   prog.className = "progress";
@@ -801,10 +873,14 @@ function onTransferProgress(u, e) {
 /* ---------- uploads with XHR progress ---------- */
 
 function uploadFiles(files, rootId = current.root, path = current.path) {
-  if (!rootId) return;
+  if (!rootId) {
+    addHistoryRow("No folder open", "pick a drive to send files into it", "warning");
+    return;
+  }
+  const to = (peerState ? peerState.name : "this device") + "/" + rootId + (path ? "/" + path : "");
   for (const file of files) {
     inFlight++;
-    const u = addTransferRow(file.name, file.size);
+    const u = addTransferRow(file.name, file.size, "to " + to);
 
     const xhr = new XMLHttpRequest();
     const fd = new FormData();
@@ -852,7 +928,7 @@ function downloadFile(name, rel, size) {
     return;
   }
 
-  const u = addTransferRow(name, size);
+  const u = addTransferRow(name, size, "from " + (peerState ? peerState.name : "this device"));
   u.status.className = "badge text-bg-info";
   u.status.textContent = "Downloading";
 
