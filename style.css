@@ -321,8 +321,8 @@ body {
 .peer-radar {
   position: relative;
   width: 100%;
-  max-width: 460px;
-  height: 320px;
+  max-width: 420px;
+  aspect-ratio: 1 / 1;
   margin: 0 auto 8px;
   border-radius: 50%;
   border: 1px solid rgba(56, 189, 248, 0.35);
@@ -341,7 +341,7 @@ body {
   animation: radar-spin 4s linear infinite;
   pointer-events: none;
 }
-@keyframes radar-spin { to { transform: rotate(360deg); } }
+@keyframes radar-spin { from { transform: rotate(360deg); } to { transform: rotate(0deg); } }
 .radar-dots { position: absolute; inset: 0; }
 .blip {
   position: absolute;

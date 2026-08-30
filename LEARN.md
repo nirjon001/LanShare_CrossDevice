@@ -292,7 +292,9 @@ Never move to the next section with an unchecked gap — gaps compound.
 
 ### 41. Drive detection
 - **What it is**: Windows: loop `C:`..`Z:` and keep the letters that exist. Linux: read `/proc/mounts`
-  and drop virtual filesystems (tmpfs, sysfs…). The same piece of code, two operating systems.
+  and drop virtual filesystems (tmpfs, sysfs…). The same piece of code, two operating systems. On
+  Android/Termux, internal storage may not survive the mount scan, so a dedicated pass checks the
+  canonical paths (`/storage/emulated/0`, `/sdcard`, …) and labels them "Internal storage".
 - **Find it**: `lanShare.py → detect_drives()`; result merged with extra shares in `build_shares()`
 - **Do it**: plug in a USB stick and rerun — the new drive appears in the Drives tab without restart
   code changes (run the server again) and is browsable in the browser.
@@ -462,16 +464,19 @@ Never move to the next section with an unchecked gap — gaps compound.
 
 ### 58. Zero-config LAN discovery (UDP)
 - **What it is**: the hub registry answers "who pressed the same PIN", but that still needs someone to
-  run the hub. So every instance *also* whispers on the LAN: a tiny JSON blob (id + name + url) is
-  multicasted to `239.255.43.21:41337` every 5 s, and each instance listens on that same address,
-  remembering who it has heard from recently. The noisy process is self-quieting — a received announce
-  whose `id == DEVICE_ID` is thrown away. So two PCs that never configured a hub see each other appear
-  on the radar as soon as they're on the same network. `LANSHARE_DISCOVERY_PEERS` unicasts to specific
-  `host:port` pairs (not just the multicast group) — which is exactly what the test harness uses to run
-  3 processes on one machine deterministically.
-- **Find it**: `lanShare.py → _discovery_loop()`, `_ingest_discovery()`, `api_peers()` (merges the
-  `devices.json` registry with `DISCOVERED`), `find_peer()` (fallback to discovered entries so the
-  `/peer/{id}/...` proxy works hub-less too)
+  run the hub. So every instance *also* whispers on the LAN: a tiny JSON blob (id + name + url) is sent
+  out via UDP multicast (`239.255.43.21:41337`) **and** broadcast (`255.255.255.255` + each interface's
+  directed broadcast) every 5 s, and each instance listens on that same address, remembering who it has
+  heard from recently. The multicast group is joined on *every* local interface (not just the default
+  route one), which is what keeps a phone on Wi-Fi visible when Windows picked the Ethernet NIC for
+  multicast. The noisy process is self-quieting — a received announce whose `id == DEVICE_ID` is thrown
+  away. So two PCs that never configured a hub see each other appear on the radar as soon as they're on
+  the same network. `LANSHARE_DISCOVERY_PEERS` unicasts to specific `host:port` pairs (not just the
+  group/broadcast) — which is exactly what the test harness uses to run 3 processes on one machine
+  deterministically.
+- **Find it**: `lanShare.py → _discovery_loop()`, `_discovery_targets()`, `_local_ipv4s()`,
+  `_ingest_discovery()`, `api_peers()` (merges the `devices.json` registry with `DISCOVERED`),
+  `find_peer()` (fallback to discovered entries so the `/peer/{id}/...` proxy works hub-less too)
 - **Do it**: `LANSHARE_DISCOVERY=0` to turn it off; run two instances on two machines with no pin
   registry and watch both radars light up.
 

@@ -120,6 +120,35 @@ def detect_drives():
             "type": "drive",
             "writable": True,
         })
+    known = {}
+    for d in drives:
+        try:
+            known.setdefault(os.path.realpath(d["path"]), d)
+        except OSError:
+            pass
+    for cand, label in (
+        ("/storage/emulated/0", "Internal storage"),
+        ("/storage/emulated/current", "Internal storage"),
+        ("/sdcard", "Internal storage"),
+        ("/storage/emulated", "Storage (all users)"),
+    ):
+        if not Path(cand).is_dir():
+            continue
+        real = os.path.realpath(cand)
+        d = known.get(real)
+        if d is not None:
+            d["name"] = f"/{label}"
+            continue
+        new = {
+            "id": slugify(cand),
+            "name": f"/{label}",
+            "path": cand,
+            "type": "drive",
+            "writable": True,
+        }
+        if new["id"] not in {x["id"] for x in drives}:
+            drives.append(new)
+            known[real] = new
     return drives
 
 
@@ -401,13 +430,53 @@ def _ingest_discovery(data):
         DISCOVERED[pid] = {"id": pid, "name": name, "url": url, "last_seen": time.time()}
 
 
+def _local_ipv4s():
+    """Best-effort list of this host's non-loopback IPv4 addresses."""
+    ips = []
+    try:
+        host, _, addrs = socket.gethostbyname_ex(socket.gethostname())
+        ips.extend([host] + list(addrs))
+    except OSError:
+        pass
+    try:
+        ips.append(get_lan_ip())
+    except OSError:
+        pass
+    out = []
+    for ip in ips:
+        if not ip or ip.startswith("127.") or ip in out:
+            continue
+        out.append(ip)
+    return out
+
+
+def _discovery_targets():
+    """Where an announce goes: multicast group, limited + directed broadcasts, unicast peers."""
+    targets = [(DISCOVERY_GROUP, DISCOVERY_PORT), ("255.255.255.255", DISCOVERY_PORT)]
+    for ip in _local_ipv4s():
+        host, _, port = ip.rpartition(".")
+        try:
+            int(port)
+        except ValueError:
+            continue
+        targets.append((f"{host}.255", DISCOVERY_PORT))
+    for peer in DISCOVERY_PEERS:
+        host, _, port = peer.rpartition(":")
+        try:
+            targets.append((host, int(port)))
+        except ValueError:
+            continue
+    return targets
+
+
 def _discovery_loop():
     payload = _discovery_announce_payload()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    except OSError:
-        pass
+    for opt in (socket.SO_REUSEADDR, socket.SO_BROADCAST):
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, opt, 1)
+        except OSError:
+            pass
     try:
         sock.bind(("", DISCOVERY_PORT))
     except OSError:
@@ -416,30 +485,46 @@ def _discovery_loop():
         except OSError:
             pass
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        except OSError:
+            pass
     try:
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 3)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
-        sock.setsockopt(
-            socket.IPPROTO_IP,
-            socket.IP_ADD_MEMBERSHIP,
-            socket.inet_aton(DISCOVERY_GROUP) + socket.inet_aton("0.0.0.0"),
-        )
     except OSError:
         pass
-    console.print(
-        f"[cyan]LAN discovery[/cyan] on [green]{DISCOVERY_GROUP}:{DISCOVERY_PORT}[/green]"
-        + (f", unicast peers: {', '.join(DISCOVERY_PEERS)}" if DISCOVERY_PEERS else "")
-    )
-    while True:
+    joined = 0
+    for ip in _local_ipv4s():
         try:
-            sock.sendto(payload, (DISCOVERY_GROUP, DISCOVERY_PORT))
+            sock.setsockopt(
+                socket.IPPROTO_IP,
+                socket.IP_ADD_MEMBERSHIP,
+                socket.inet_aton(DISCOVERY_GROUP) + socket.inet_aton(ip),
+            )
+            joined += 1
         except OSError:
             pass
-        for peer in DISCOVERY_PEERS:
-            host, _, port = peer.rpartition(":")
+    if joined == 0:
+        try:
+            sock.setsockopt(
+                socket.IPPROTO_IP,
+                socket.IP_ADD_MEMBERSHIP,
+                socket.inet_aton(DISCOVERY_GROUP) + socket.inet_aton("0.0.0.0"),
+            )
+            joined = 1
+        except OSError:
+            pass
+    targets = _discovery_targets()
+    console.print(
+        f"[cyan]LAN discovery[/cyan] on [green]{DISCOVERY_GROUP}:{DISCOVERY_PORT}[/green] "
+        f"(interfaces: {joined}, announce targets: {len(targets)})"
+    )
+    while True:
+        for addr in targets:
             try:
-                sock.sendto(payload, (host, int(port)))
-            except (OSError, ValueError):
+                sock.sendto(payload, addr)
+            except OSError:
                 pass
         deadline = time.time() + 5
         while True:
