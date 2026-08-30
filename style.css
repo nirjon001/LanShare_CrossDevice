@@ -267,7 +267,7 @@ body {
 }
 .transfer-row .progress {
   flex: 0 1 170px;
-  height: 0.5rem;
+  height: 0.6rem;
 }
 .transfer-row .t-pct {
   width: 3rem;
@@ -315,79 +315,6 @@ body {
 .drive-card.dragover {
   border-color: #7dd3fc;
   background: rgba(56, 189, 248, 0.10);
-}
-
-/* ===== peer radar ===== */
-.peer-radar {
-  position: relative;
-  width: 100%;
-  max-width: 420px;
-  aspect-ratio: 1 / 1;
-  margin: 0 auto 8px;
-  border-radius: 50%;
-  border: 1px solid rgba(56, 189, 248, 0.35);
-  background:
-    radial-gradient(circle, rgba(56, 189, 248, 0.06) 0 49%, transparent 50%),
-    repeating-radial-gradient(circle, transparent 0 34px, rgba(56, 189, 248, 0.10) 34px 35px),
-    rgba(10, 14, 20, 0.6);
-  overflow: hidden;
-  box-shadow: inset 0 0 40px rgba(56, 189, 248, 0.10);
-}
-.radar-sweep {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: conic-gradient(from 0deg, rgba(56, 189, 248, 0.32), transparent 70deg);
-  animation: radar-spin 4s linear infinite;
-  pointer-events: none;
-}
-@keyframes radar-spin { from { transform: rotate(360deg); } to { transform: rotate(0deg); } }
-.radar-dots { position: absolute; inset: 0; }
-.blip {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  background: transparent;
-  border: 0;
-  padding: 0;
-  color: var(--text);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  z-index: 2;
-}
-.blip-core { font-size: 16px; line-height: 1; }
-.blip-online .blip-core { color: #22c55e; animation: blip-pulse 2s ease-in-out infinite; }
-.blip-off .blip-core { color: #6b7280; }
-.blip-active .blip-core,
-.blip-self .blip-core { color: #0dcaf0; animation: none; }
-.blip-name {
-  font-size: 11px;
-  max-width: 92px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  background: rgba(0, 0, 0, 0.5);
-  padding: 1px 6px;
-  border-radius: 8px;
-  pointer-events: none;
-}
-@keyframes blip-pulse {
-  0%, 100% { opacity: 1; filter: drop-shadow(0 0 2px rgba(34, 197, 94, 0.8)); }
-  50% { opacity: 0.55; filter: drop-shadow(0 0 8px rgba(34, 197, 94, 0.9)); }
-}
-.radar-note {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 10px;
-  text-align: center;
-  font-size: 11px;
-  color: var(--text-dim);
-  padding: 8px 18px;
-  z-index: 3;
-  background: linear-gradient(transparent, rgba(10, 14, 20, 0.92));
-  border-radius: 0 0 100% 100%;
 }
 
 /* ===== the Bag (no-copy pointer panel) ===== */

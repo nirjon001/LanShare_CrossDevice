@@ -19,11 +19,11 @@ to upload into the folder you're looking at.
 - **The Bag** — stash files, whole folders, or a just-built zip as zero-copy pointers (the 💼 button or
   dragging a row onto the Bag), then pull them into any folder as a copy or a move; survives restarts
   via `bag.json`
-- **Multi-device** — run one instance as a **hub**; other devices register to it and appear on a live
-  **radar** in the Drives view (a rotating sonar sweep, dots pulsing green when online). Pick a dot to
-  browse/search/upload/zip/stash that device through the hub (same PIN everywhere). No hub needed for
-  the basics: instances announce themselves over UDP, so devices on the same network pop up on each
-  other's radar automatically.
+- **Multi-device** — run one instance as a **hub**; other devices register to it and appear as device
+  chips in the Drives view (● online, ○ offline). Pick a chip to browse/search/upload/zip/stash that
+  device through the hub (same PIN everywhere). No hub needed for the basics: instances announce
+  themselves over multicast + broadcast UDP, so devices on the same network pop into the device list
+  automatically.
 - **Paste a Windows path** into the address bar (`G:\Downloads\songs`) and jump straight there
 - **Recent files** — each device shows the files recently opened in Windows on it (the OS Recent
   list), and other devices can see them through the hub and grab them with Download or the 💼 Bag:
@@ -106,10 +106,10 @@ Start the hub normally; start the other devices with:
 LANSHARE_HUB_URL=http://192.168.1.5:8000 LANSHARE_PORT=8010 LANSHARE_DEVICE_NAME=Room1 python lanShare.py
 ```
 
-The hub console prints `device registered`, and the radar shows the device with a pulsing green dot.
-No hub? Instances also announce themselves over UDP, so two devices on the same network appear on each
-other's radar (a sonar with a rotating sweep) with zero configuration — click a dot to browse and send
-files to that device.
+The hub console prints `device registered`, and the device list shows the device with an online dot.
+No hub? Instances also announce themselves over multicast + broadcast UDP, so two devices on the same
+network appear in each other's device list with zero configuration — click a device to browse and send
+files to it.
 
 ## Routes (for reference)
 

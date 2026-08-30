@@ -470,7 +470,7 @@ Never move to the next section with an unchecked gap — gaps compound.
   heard from recently. The multicast group is joined on *every* local interface (not just the default
   route one), which is what keeps a phone on Wi-Fi visible when Windows picked the Ethernet NIC for
   multicast. The noisy process is self-quieting — a received announce whose `id == DEVICE_ID` is thrown
-  away. So two PCs that never configured a hub see each other appear on the radar as soon as they're on
+  away. So two PCs that never configured a hub see each other appear as peers as soon as they're on
   the same network. `LANSHARE_DISCOVERY_PEERS` unicasts to specific `host:port` pairs (not just the
   group/broadcast) — which is exactly what the test harness uses to run 3 processes on one machine
   deterministically.
@@ -478,19 +478,17 @@ Never move to the next section with an unchecked gap — gaps compound.
   `_ingest_discovery()`, `api_peers()` (merges the `devices.json` registry with `DISCOVERED`),
   `find_peer()` (fallback to discovered entries so the `/peer/{id}/...` proxy works hub-less too)
 - **Do it**: `LANSHARE_DISCOVERY=0` to turn it off; run two instances on two machines with no pin
-  registry and watch both radars light up.
+  registry and watch both device lists populate.
 
-### 59. The radar (a sweep, not a list)
-- **What it is**: instead of buttons, the Drives view draws a sonar: a circular screen with radial rings
-  and a `conic-gradient` sweep animated by a CSS `@keyframes` spin. Each peer is a dot on the circle
-  (online = green pulse via `filter: drop-shadow`, offline = gray, selected = cyan), label beneath its
-  dot; "You" sit in the center. The frontend polls `/api/peers` every 5 s while the view is open so
-  online/offline transitions and new arrivals appear live.
-- **Find it**: `style.css → .peer-radar/.radar-sweep/.blip`; `lanshare.js → loadPeers()` rebuilding
-  the radar (`bar.innerHTML = ""` then absolute dots at `50 + 42*cos(θ)` / `50 + 42*sin(θ)`), polled by
-  the `peerTimer` interval from `showView("drives")`
-- **Do it**: open Drives with a phone also running the app on the same WiFi — its dot should blink
-  green within 5–10 s; click it to browse that phone.
+### 59. The peer switcher (chips)
+- **What it is**: the Drives view shows a "This device" button plus one chip per other device found
+  (● = online/clickable, ○ = offline). Clicking a chip sets `peerState`, switching the whole app to
+  that device — every request gets `/peer/{id}` prepended. The bar polls `/api/peers` every 5 s while
+  the view is open so online/offline transitions and new arrivals appear live.
+- **Find it**: `lanshare.js → loadPeers()` rebuilding the chips (`bar.innerHTML = ""`), polled by the
+  `peerTimer` interval from `showView("drives")`; `peerPrefix()` + `peerState`
+- **Do it**: open Drives with a phone also running the app on the same WiFi — its chip should light up
+  within 5–10 s; click it to browse that phone.
 
 ---
 
@@ -521,6 +519,6 @@ Then do the same for `lanshare.js`: `loadDrives`, `openDrive`, `loadListing` + b
 folder navigation (state machine), live search (debounce + sequence guard), go-to-path (`findShareForPath`),
 zip job polling with a two-phase progress bar, XHR progress uploads, blob download + native fallback,
 the Bag (stash button, row drag via `BAG_MIME`, pull copy/move into the current folder), the
-peer radar (`loadPeers` drawing dots + `peerPrefix` + `peerState`), and the
+peer chips (`loadPeers` + `peerPrefix` + `peerState`), and the
 401 guard. If a step stalls longer than 20 minutes, stop, look it up, and do it from memory the next
 day. Repeat weekly.

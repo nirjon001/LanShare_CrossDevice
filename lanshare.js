@@ -52,6 +52,7 @@ const pathInput = document.getElementById("pathInput");
 const searchInput = document.getElementById("searchInput");
 const searchPanel = document.getElementById("searchPanel");
 const transferList = document.getElementById("transferList");
+const transferPanel = document.querySelector(".transfer-panel");
 const clearTransfers = document.getElementById("clearTransfers");
 const installBtn = document.getElementById("installBtn");
 const bagToggle = document.getElementById("bagToggle");
@@ -320,68 +321,33 @@ async function loadPeers() {
     return;
   }
   const devices = (data && Array.isArray(data.devices)) ? data.devices : [];
-  const n = devices.length;
-
-  bar.innerHTML = "";
-  const radar = document.createElement("div");
-  radar.className = "peer-radar";
-  const sweep = document.createElement("div");
-  sweep.className = "radar-sweep";
-  const dots = document.createElement("div");
-  dots.className = "radar-dots";
-  radar.append(sweep, dots);
-
-  const center = document.createElement("button");
-  center.className = "blip blip-self";
-  center.title = peerState ? "Click to switch back to this device" : "This device";
-  const cCore = document.createElement("span");
-  cCore.className = "blip-core";
-  cCore.textContent = "●";
-  const cName = document.createElement("span");
-  cName.className = "blip-name";
-  cName.textContent = "You";
-  center.append(cCore, cName);
-  center.addEventListener("click", () => {
+  const chips = [];
+  const me = document.createElement("button");
+  me.className = "btn btn-sm peer-chip" + (peerState ? " btn-outline-secondary" : " btn-info");
+  me.textContent = "This device";
+  me.addEventListener("click", () => {
     if (peerState) {
       peerState = null;
       loadDrives();
     }
   });
-  dots.appendChild(center);
-
-  for (let i = 0; i < devices.length; i++) {
-    const d = devices[i];
-    const ang = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(n, 1);
-    const active = peerState && peerState.id === d.id;
+  chips.push(me);
+  for (const d of devices) {
     const b = document.createElement("button");
-    b.className = "blip" + (d.online ? " blip-online" : " blip-off") + (active ? " blip-active" : "");
-    b.style.left = (50 + 42 * Math.cos(ang)) + "%";
-    b.style.top = (50 + 42 * Math.sin(ang)) + "%";
+    const active = peerState && peerState.id === d.id;
+    b.className = "btn btn-sm peer-chip" + (active ? " btn-info" : " btn-outline-secondary");
+    b.textContent = (d.online ? "● " : "○ ") + d.name;
     b.title = d.url;
-    const core = document.createElement("span");
-    core.className = "blip-core";
-    core.textContent = d.online ? "●" : "○";
-    const nm = document.createElement("span");
-    nm.className = "blip-name";
-    nm.textContent = d.name;
-    b.append(core, nm);
-    if (d.online && !active) {
-      b.addEventListener("click", () => {
+    b.addEventListener("click", () => {
+      if (!active) {
         peerState = { id: d.id, name: d.name };
         loadDrives();
-      });
-    }
-    dots.appendChild(b);
+      }
+    });
+    chips.push(b);
   }
-
-  const note = document.createElement("div");
-  note.className = "radar-note";
-  note.textContent = n === 0
-    ? "No other device on your network yet - run this app on another PC or phone and it appears here automatically."
-    : n + " device" + (n === 1 ? "" : "s") + " on the LAN · click one to browse and send files to it";
-  radar.appendChild(note);
-
-  bar.appendChild(radar);
+  bar.innerHTML = "";
+  for (const c of chips) bar.appendChild(c);
 }
 
 /* ---------- listing ---------- */
@@ -843,6 +809,12 @@ function addTransferRow(name, size, target) {
 
   row.append(nameEl, sizeEl, prog, pct, status, rate);
   transferList.prepend(row);
+  if (transferPanel) {
+    const r = transferPanel.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > window.innerHeight) {
+      transferPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
   return { row, bar, pct, status, rate };
 }
 

@@ -95,6 +95,20 @@
           <input type="file" id="fileInput" multiple hidden>
         </div>
 
+        <section class="mt-4 transfer-panel">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <h2 class="fs-6 fw-semibold text-body-secondary text-uppercase mb-0">Transfers</h2>
+            <button id="clearTransfers" class="btn btn-sm btn-link text-secondary text-decoration-none">
+              Clear
+            </button>
+          </div>
+          <div id="transferList">
+            <div id="transferEmpty" class="text-secondary text-center py-2 small">
+              No transfers yet.
+            </div>
+          </div>
+        </section>
+
         <section class="mt-4">
           <div class="table-responsive">
             <table class="table table-hover align-middle filetable mb-0">
@@ -112,20 +126,6 @@
           </div>
           <div id="emptyState" class="empty text-secondary text-center d-none">
             This folder is empty.
-          </div>
-        </section>
-
-        <section class="mt-4 transfer-panel">
-          <div class="d-flex justify-content-between align-items-center mb-2">
-            <h2 class="fs-6 fw-semibold text-body-secondary text-uppercase mb-0">Transfers</h2>
-            <button id="clearTransfers" class="btn btn-sm btn-link text-secondary text-decoration-none">
-              Clear
-            </button>
-          </div>
-          <div id="transferList">
-            <div id="transferEmpty" class="text-secondary text-center py-2 small">
-              No transfers yet.
-            </div>
           </div>
         </section>
       </section>
