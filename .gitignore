@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
-*.pycdevice.id
+*.pyc
+device.id
 bag.json
 devices.json
 .bag_stash/
